@@ -443,7 +443,8 @@ impl Client {
 	/// Race the QUIC dial against the WebSocket fallback, handshaking whichever wins.
 	///
 	/// When WebSocket wins while QUIC is still dialing, the QUIC dial carries on as
-	/// [`Dialed::upgrade`] rather than being dropped.
+	/// [`Dialed::upgrade`] rather than being dropped, and the attempt falls back to it
+	/// if the MoQ handshake over WebSocket fails.
 	///
 	/// `moq` is the QUIC-side builder, which carries the SETUP path for a raw QUIC dial.
 	/// The WebSocket fallback uses the plain builder: qmux over WebSocket carries the
@@ -462,7 +463,8 @@ impl Client {
 		Q: Future<Output = crate::Result<S>> + Unpin + Send + 'static,
 		S: moq_net::transport::poll::Boxable,
 	{
-		let transport = quic_transport(addr.url());
+		let url = addr.url().clone();
+		let transport = quic_transport(&url);
 		let alpns = self.versions.alpns();
 		let ws_config = self.websocket.clone();
 		let ws_tls = self.tls.clone();
@@ -476,7 +478,20 @@ impl Client {
 		match race_transport_connect(quic, websocket).await? {
 			TransportRace::Quic(quic) => Ok(Dialed::new(connect_session(moq, quic).await?, transport)),
 			TransportRace::WebSocket { session, quic } => {
-				let session = connect_session(&self.moq, crate::transport::Session::new(session)).await?;
+				let session = match connect_session(&self.moq, crate::transport::Session::new(session)).await {
+					Ok(session) => session,
+					Err(err) => {
+						// The fallback got through but its MoQ handshake did not. A QUIC dial still
+						// pending may yet connect, bounded by the same deadline as the race.
+						let err = Error::from(err);
+						let Some(quic) = quic else { return Err(err) };
+						tracing::warn!(%err, "WebSocket handshake failed; waiting on QUIC");
+						let quic = quic.await.map_err(|quic| race_error(quic, err))?;
+						// UDP gets through after all, so the next dial gives QUIC its head start.
+						crate::websocket::forget(&url);
+						return Ok(Dialed::new(connect_session(moq, quic).await?, transport));
+					}
+				};
 				let mut dialed = Dialed::new(session, crate::Transport::WebSocket);
 				dialed.upgrade = quic.map(|quic| {
 					let moq = moq.clone();
@@ -719,20 +734,27 @@ where
 		}
 	}
 
-	// Auth is terminal only when both arms refused. A WebTransport-only endpoint
-	// answers the fallback with 403 while QUIC is still in flight, and reconnect
-	// treats is_auth() as terminal, so a mixed pair reports the retryable error.
 	match (quic_err, websocket_err) {
-		(Some(quic), Some(websocket)) => Err(match (quic.is_auth(), websocket.is_auth()) {
-			(false, false) => Error::TransportRace {
-				quic: std::sync::Arc::new(quic),
-				websocket: std::sync::Arc::new(websocket),
-			},
-			(true, false) => websocket,
-			_ => quic,
-		}),
+		(Some(quic), Some(websocket)) => Err(race_error(quic, websocket)),
 		(Some(err), None) | (None, Some(err)) => Err(err),
 		(None, None) => Err(Error::ConnectFailed),
+	}
+}
+
+/// The error for a race both arms lost.
+///
+/// Auth is terminal only when both arms refused. A WebTransport-only endpoint
+/// answers the fallback with 403 while QUIC is still in flight, and reconnect
+/// treats is_auth() as terminal, so a mixed pair reports the retryable error.
+#[cfg(all(feature = "websocket", feature = "noq"))]
+fn race_error(quic: Error, websocket: Error) -> Error {
+	match (quic.is_auth(), websocket.is_auth()) {
+		(false, false) => Error::TransportRace {
+			quic: std::sync::Arc::new(quic),
+			websocket: std::sync::Arc::new(websocket),
+		},
+		(true, false) => websocket,
+		_ => quic,
 	}
 }
 
