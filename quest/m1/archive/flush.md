@@ -27,6 +27,9 @@ Decided:
   `web_async` time, never `tokio::time`.
 - Manual flush is per track: `Control::flush(name)` on the writer, beside the
   broadcast-wide `cut`, and `Recorder::flush()` on a timeline.
+- JS mirrors it: `@moq/hang`'s `Timeline.Recorder` gets the same idle
+  deadline and a `flush()`, so Rust and JS timelines stay one API. Without it,
+  an idle browser track keeps today's unbounded behavior (Codex on #4301).
 - The bound covers closing a record, not upload latency: a slow object-store
   PUT still delays the durable commit, which the writer already serializes.
 - Tests inject `now` into the segmenter and run the writer on paused tokio
@@ -37,3 +40,4 @@ Decided:
 ## Required
 
 - [Rust per-track timelines](/quest/m1/archive/track-timeline/core.md) - the per-track segmenter and writer this extends
+- [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - the JS recorder this extends, so the flush lands on the per-track shape rather than the aligned one it replaces
