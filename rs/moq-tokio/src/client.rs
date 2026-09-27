@@ -486,10 +486,17 @@ impl Client {
 						let err = Error::from(err);
 						let Some(quic) = quic else { return Err(err) };
 						tracing::warn!(%err, "WebSocket handshake failed; waiting on QUIC");
-						let quic = quic.await.map_err(|quic| race_error(quic, err))?;
+						let quic = match quic.await {
+							Ok(quic) => quic,
+							Err(quic) => return Err(race_error(quic, err)),
+						};
 						// UDP gets through after all, so the next dial gives QUIC its head start.
 						crate::websocket::forget(&url);
-						return Ok(Dialed::new(connect_session(moq, quic).await?, transport));
+						// Both handshakes failing is still a two-arm loss: a mixed auth pair stays retryable.
+						let session = connect_session(moq, quic)
+							.await
+							.map_err(|quic| race_error(quic.into(), err))?;
+						return Ok(Dialed::new(session, transport));
 					}
 				};
 				let mut dialed = Dialed::new(session, crate::Transport::WebSocket);
