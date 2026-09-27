@@ -1,5 +1,5 @@
 use crate::runtime::Timers as _;
-use crate::{SessionError, announce, frame, group, origin, track};
+use crate::{SessionError, announce, broadcast, frame, group, origin, track};
 use std::{
 	collections::HashMap,
 	ops::Bound,
@@ -1008,6 +1008,7 @@ enum SubscribeState<S: crate::transport::poll::Session> {
 	/// Waiting for the model subscription to be confirmed.
 	Confirm {
 		msg: lite::Subscribe<'static>,
+		broadcast: broadcast::Consumer,
 		subscribing: track::Subscribing,
 	},
 	/// Streaming groups and datagrams. Boxed: by far the largest state, and the enum
@@ -1112,11 +1113,15 @@ impl<S: crate::transport::poll::Session> SubscribeServe<S> {
 					// duplicate demand).
 					let track_consumer = broadcast.track(&msg.track)?;
 					let subscribing = track_consumer.subscribe(subscription).into_inner();
-					self.state = SubscribeState::Confirm { msg, subscribing };
+					self.state = SubscribeState::Confirm {
+						msg,
+						broadcast,
+						subscribing,
+					};
 				}
 				SubscribeState::Confirm { subscribing, .. } => {
 					let track = ready!(subscribing.poll_ok(waiter))?;
-					let SubscribeState::Confirm { msg, .. } =
+					let SubscribeState::Confirm { msg, broadcast, .. } =
 						std::mem::replace(&mut self.state, SubscribeState::Decode)
 					else {
 						unreachable!()
@@ -1164,6 +1169,10 @@ impl<S: crate::transport::poll::Session> SubscribeServe<S> {
 						version: self.shared.version,
 						timescale,
 						opens: Default::default(),
+						served: Served {
+							broadcast: Some(broadcast),
+							here: self.shared.self_origin,
+						},
 					};
 
 					let run = TrackRun::new(sub, track, Bounds::from(&msg), track_priority_tx);
@@ -1235,6 +1244,7 @@ enum FetchState {
 	/// Waiting for the fetched group.
 	Fetch {
 		msg: lite::Fetch<'static>,
+		broadcast: broadcast::Consumer,
 		fetching: track::Fetching,
 	},
 	/// Streaming the group's frames in order. The delta-timestamp baseline
@@ -1339,12 +1349,34 @@ impl<S: crate::transport::poll::Session> FetchServe<S> {
 							},
 						)
 						.into_inner();
-					self.state = FetchState::Fetch { msg, fetching };
+					self.state = FetchState::Fetch {
+						msg,
+						broadcast,
+						fetching,
+					};
 				}
-				FetchState::Fetch { msg, fetching } => {
+				FetchState::Fetch {
+					msg,
+					broadcast,
+					fetching,
+				} => {
 					let mut group = ready!(kio::Pollable::poll(fetching, waiter))?;
 
-					// The response carries no header, so a short run is indistinguishable
+					// Lite-07 names the origin serving the group ahead of its frames, read
+					// now that the group resolved (its content flowed, so the front's
+					// origin is settled).
+					if self.shared.version.has_origin() {
+						let served = Served {
+							broadcast: Some(broadcast.clone()),
+							here: self.shared.self_origin,
+						};
+						let stream = self.stream.as_mut().expect("stream present");
+						stream.writer.buffer(&lite::FetchOk {
+							origin: served.origin(),
+						})?;
+					}
+
+					// The response carries no position, so a short run is indistinguishable
 					// from one that started elsewhere: only serve a range we can cover
 					// exactly. `fetch_group` already positions the consumer, so this is a
 					// belt-and-braces check on a promise the wire can't restate.
@@ -2133,6 +2165,37 @@ struct Subscription<S: crate::transport::poll::Session> {
 	timescale: Option<crate::Timescale>,
 	/// The group streams this subscription opened, shared by every group it serves.
 	opens: Arc<Opens>,
+	/// Who SUBSCRIBE_OK names as serving it (lite-07+).
+	served: Served,
+}
+
+/// Names the origin serving a request, for SUBSCRIBE_OK and FETCH_OK: the one the
+/// broadcast's front serves, read when the reply goes out (a copy's content only
+/// reaches the front once its origin is admitted), or ours for a broadcast that is
+/// not route-fed.
+#[derive(Clone)]
+struct Served {
+	broadcast: Option<broadcast::Consumer>,
+	here: Hop,
+}
+
+#[cfg(test)]
+impl Default for Served {
+	fn default() -> Self {
+		Self {
+			broadcast: None,
+			here: Hop::UNKNOWN,
+		}
+	}
+}
+
+impl Served {
+	fn origin(&self) -> Hop {
+		self.broadcast
+			.as_ref()
+			.and_then(|broadcast| broadcast.origin())
+			.unwrap_or(self.here)
+	}
 }
 
 /// Counts a subscription's group streams for lite-07's SUBSCRIBE_END.
@@ -2326,22 +2389,7 @@ impl<S: crate::transport::poll::Session> TrackRun<S> {
 							tracing::debug!(subscribe = self.ctx.id, track = %self.ctx.track_name, sequence, "skipping group with a missing head");
 							continue;
 						}
-						if self.emit_range && !self.start_sent {
-							self.start_sent = true;
-							// Only the group: the subscriber derives the start frame from
-							// its own request (see `lite::SubscribeStart`).
-							stream
-								.writer
-								.buffer(&lite::SubscribeResponse::Start(lite::SubscribeStart {
-									group: sequence,
-								}))?;
-							// SUBSCRIBE_OK is an implicit drop of everything below the
-							// resolved start (the subscriber records it as a permanent
-							// miss), so a lower group arriving late must not be served
-							// after all. A widening SUBSCRIBE_UPDATE re-lowers the floor,
-							// renegotiating the resolved start along with the demand.
-							self.track.start_at(sequence);
-						}
+						self.start(stream, sequence)?;
 
 						let frame_start = group.index();
 						tracing::debug!(subscribe = self.ctx.id, track = %self.ctx.track_name, sequence, "serving group");
@@ -2358,7 +2406,10 @@ impl<S: crate::transport::poll::Session> TrackRun<S> {
 						self.children
 							.push(GroupServe::new(self.ctx.clone(), sequence, frame_start, handle, group));
 					}
-					Recv::Datagram(datagram) => self.ctx.serve_datagram(datagram),
+					Recv::Datagram(datagram) => {
+						self.start(stream, datagram.sequence)?;
+						self.ctx.serve_datagram(datagram);
+					}
 					Recv::Boundary(group) => {
 						// The track declared its exclusive final sequence. Forward it now,
 						// even if trailing groups (below `group`) are still in flight, then
@@ -2390,6 +2441,30 @@ impl<S: crate::transport::poll::Session> TrackRun<S> {
 
 			return Poll::Pending;
 		}
+	}
+
+	/// Send SUBSCRIBE_START ahead of the first group served, by stream or datagram: it
+	/// resolves the start and names the origin, which a lite-07 subscriber needs before
+	/// it delivers either.
+	fn start(&mut self, stream: &mut Stream<S, Version>, sequence: u64) -> Result<(), Error> {
+		if !self.emit_range || self.start_sent {
+			return Ok(());
+		}
+		self.start_sent = true;
+		// Only the group: the subscriber derives the start frame from its own request
+		// (see `lite::SubscribeStart`).
+		stream
+			.writer
+			.buffer(&lite::SubscribeResponse::Start(lite::SubscribeStart {
+				group: sequence,
+				origin: self.ctx.served.origin(),
+			}))?;
+		// SUBSCRIBE_OK is an implicit drop of everything below the resolved start (the
+		// subscriber records it as a permanent miss), so a lower group arriving late
+		// must not be served after all. A widening SUBSCRIBE_UPDATE re-lowers the floor,
+		// renegotiating the resolved start along with the demand.
+		self.track.start_at(sequence);
+		Ok(())
 	}
 }
 
@@ -2810,6 +2885,7 @@ mod serve_group_test {
 			version: Version::Lite06,
 			timescale: Some(crate::Timescale::default()),
 			opens: Default::default(),
+			served: Served::default(),
 		};
 
 		let track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
@@ -2851,6 +2927,7 @@ mod serve_group_test {
 			version: Version::Lite06,
 			timescale: Some(crate::Timescale::default()),
 			opens: Default::default(),
+			served: Served::default(),
 		};
 
 		let track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
@@ -2896,6 +2973,7 @@ mod serve_group_test {
 			version: Version::Lite06,
 			timescale: Some(crate::Timescale::default()),
 			opens: Default::default(),
+			served: Served::default(),
 		};
 
 		let track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
@@ -2959,6 +3037,7 @@ mod serve_group_test {
 			version: Version::Lite06,
 			timescale: Some(crate::Timescale::default()),
 			opens: Default::default(),
+			served: Served::default(),
 		};
 
 		let track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
@@ -3029,6 +3108,7 @@ mod serve_group_test {
 			version: Version::Lite06,
 			timescale: Some(crate::Timescale::default()),
 			opens: Default::default(),
+			served: Served::default(),
 		};
 
 		let track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
@@ -3075,6 +3155,11 @@ mod serve_group_test {
 			version: Version::Lite07,
 			timescale: Some(crate::Timescale::default()),
 			opens: Default::default(),
+			// Content originating here: SUBSCRIBE_START names our own hop.
+			served: Served {
+				broadcast: None,
+				here: Hop::new(9).unwrap(),
+			},
 		};
 		let bounds = Bounds {
 			start_group: Some(0),
@@ -3108,8 +3193,8 @@ mod serve_group_test {
 		track.finish().unwrap();
 		assert!(matches!(run.await.unwrap(), TrackEnd::Finished));
 
-		// SUBSCRIBE_START at 0, then SUBSCRIBE_END at 3 with 2 streams.
-		assert_eq!(*log.writes.lock().unwrap(), [0, 1, 0, 1, 2, 3, 2]);
+		// SUBSCRIBE_START at 0 from origin 9, then SUBSCRIBE_END at 3 with 2 streams.
+		assert_eq!(*log.writes.lock().unwrap(), [0, 2, 0, 9, 1, 2, 3, 2]);
 	}
 
 	/// A track that ends without a group still ends the subscription, with no stream owed.
@@ -3145,7 +3230,7 @@ mod serve_group_test {
 		write_group(&mut track, 1, 1000);
 		track.finish().unwrap();
 		assert!(futures::poll!(run.as_mut()).is_pending(), "group 1 is still opening");
-		assert_eq!(*log.writes.lock().unwrap(), [0, 1, 0], "only SUBSCRIBE_START so far");
+		assert_eq!(*log.writes.lock().unwrap(), [0, 2, 0, 9], "only SUBSCRIBE_START so far");
 
 		let Ok(mut open) = gate.write() else {
 			panic!("transport gate closed");
@@ -3153,7 +3238,7 @@ mod serve_group_test {
 		*open = true;
 		drop(open);
 		run.await.unwrap();
-		assert_eq!(*log.writes.lock().unwrap(), [0, 1, 0, 1, 2, 2, 1]);
+		assert_eq!(*log.writes.lock().unwrap(), [0, 2, 0, 9, 1, 2, 2, 1]);
 	}
 }
 
