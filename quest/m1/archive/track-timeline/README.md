@@ -39,7 +39,7 @@ Decisions:
   from storage objects. Fetching extra objects is fine when they land in the
   reader's cache for the next request.
 
-## Quests
+## Required
 
 - [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - `@moq/hang` publishes and reads the same per-track timelines as Rust
 
