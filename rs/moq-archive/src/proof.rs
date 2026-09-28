@@ -128,7 +128,7 @@ async fn record<S: ObjectStore + Clone>(store: &Store<S>) {
 	for track in tracks.values() {
 		track.finish().unwrap();
 	}
-	source.finish();
+	source.close();
 	run.await.unwrap().unwrap();
 }
 
@@ -390,6 +390,6 @@ async fn an_offline_reader_follows_dvr_expiry() {
 	}
 
 	video.finish().unwrap();
-	source.finish();
+	source.close();
 	run.await.unwrap().unwrap();
 }

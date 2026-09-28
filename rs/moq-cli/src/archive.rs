@@ -355,7 +355,7 @@ mod tests {
 		.expect("the rendition is enrolled");
 		track.finish().unwrap();
 		catalog.finish().unwrap();
-		broadcast.finish();
+		broadcast.close();
 
 		tokio::time::timeout(Duration::from_secs(10), recording)
 			.await
@@ -438,7 +438,7 @@ mod tests {
 		first.finish().unwrap();
 		second.finish().unwrap();
 		catalog.finish().unwrap();
-		broadcast.finish();
+		broadcast.close();
 
 		tokio::time::timeout(Duration::from_secs(10), recording)
 			.await

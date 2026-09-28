@@ -230,7 +230,7 @@ impl<S: ObjectStore> Writer<S> {
 	/// Then flush the final segment and finish the timeline. Fails when the timeline cannot be
 	/// committed or stored, or an enrolled track delivers a group the recording cannot represent:
 	/// the recording stops at its last durable timeline object. Returns the source's error, after
-	/// finishing, when the broadcast aborted.
+	/// finishing, when the broadcast was aborted with one.
 	pub async fn run(self) -> Result<()> {
 		let Self {
 			control,
@@ -336,10 +336,10 @@ impl<S: ObjectStore> Writer<S> {
 			delete(&shared.store, keys).await;
 		}
 
-		if source.is_finished() {
-			Ok(())
-		} else {
-			Err(source_error(source.closed().await))
+		// A broadcast end carries no cause; only the deprecated `abort` still reports one.
+		match source.closed().await {
+			moq_net::Error::Dropped => Ok(()),
+			err => Err(source_error(err)),
 		}
 	}
 }
@@ -938,7 +938,7 @@ mod tests {
 		}
 		video.finish().unwrap();
 		catalog.finish().unwrap();
-		source.finish();
+		source.close();
 
 		tokio::spawn(writer.run()).await.unwrap().unwrap();
 
@@ -979,7 +979,7 @@ mod tests {
 		}
 		video.finish().unwrap();
 		audio.finish().unwrap();
-		source.finish();
+		source.close();
 
 		writer.run().await.unwrap();
 
@@ -1004,7 +1004,7 @@ mod tests {
 			group(&video, sequence, &[sequence * 1000, sequence * 1000 + 500]);
 		}
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 
 		writer.run().await.unwrap();
 
@@ -1043,7 +1043,7 @@ mod tests {
 			group(&video, sequence, &[sequence * 1000]);
 		}
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 
 		let run = tokio::spawn(writer.run());
 		while window(&store).await.last().map(|record| record.segment) != Some(5) {
@@ -1076,7 +1076,7 @@ mod tests {
 		first.write_frame(ms(500), "0@500").unwrap();
 		first.finish().unwrap();
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 		run.await.unwrap().unwrap();
 
 		let records = window(&store).await;
@@ -1103,7 +1103,7 @@ mod tests {
 		group(&video, 1, &[500]);
 		group(&video, 3, &[2000]);
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 
 		writer.run().await.unwrap();
 
@@ -1125,7 +1125,7 @@ mod tests {
 		// One past the recording's largest group ID.
 		group(&video, 1 << 53, &[1000]);
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 
 		assert_eq!(
 			writer.run().await,
@@ -1149,7 +1149,7 @@ mod tests {
 		group(&video, 0, &[1000]);
 		group(&video, 1, &[500]);
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 
 		assert_eq!(
 			writer.run().await,
@@ -1180,7 +1180,7 @@ mod tests {
 			group(&video, sequence, &[sequence * 1000]);
 		}
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 
 		tokio::time::sleep(Duration::from_millis(50)).await;
 		assert!(!run.is_finished(), "a stalled pacing track holds the recording open");
@@ -1241,7 +1241,7 @@ mod tests {
 			group(&video, sequence, &[sequence * 1000, sequence * 1000 + 500]);
 		}
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 		writer.run().await.unwrap();
 	}
 
@@ -1376,7 +1376,7 @@ mod tests {
 			group(&video, sequence, &[sequence * 1000, sequence * 1000 + 500]);
 		}
 		video.finish().unwrap();
-		source.finish();
+		source.close();
 		writer.run().await.unwrap();
 		assert!(started.elapsed() >= grace);
 
