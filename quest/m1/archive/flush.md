@@ -39,5 +39,4 @@ Decided:
 
 ## Required
 
-- [Rust per-track timelines](/quest/m1/archive/track-timeline/core.md) - the per-track segmenter and writer this extends
-- [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - the JS recorder this extends, so the flush lands on the per-track shape rather than the aligned one it replaces
+- [Per-track timelines](/quest/m1/archive/track-timeline/README.md) - the per-track segmenter, writer, and JS recorder this extends, so the flush lands on the per-track shape rather than the aligned one it replaces

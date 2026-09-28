@@ -33,7 +33,7 @@ viewers address the replay broadcast directly.
 
 ## Required
 
-- [Rust per-track timelines](/quest/m1/archive/track-timeline/core.md) - seeks through per-track timelines
+- [Per-track timelines](/quest/m1/archive/track-timeline/README.md) - seeks through per-track timelines
 
 ## Closes
 
