@@ -2,10 +2,11 @@
 
 ## Goal
 
-A moq-lite AUTH_OK carrying a malformed or non-canonical grant pattern closes
-the session with PROTOCOL_VIOLATION, in Rust and in JS, as
-`drafts/draft-lcurley-moq-lite.md` already says under Path Pattern. Today
-both only end the offending token and leave the session up.
+A moq-lite AUTH_OK carrying a malformed or non-canonical grant pattern, or an
+out-of-range `Expires`, closes the session with PROTOCOL_VIOLATION, in Rust
+and in JS. `drafts/draft-lcurley-moq-lite.md` already says so for patterns
+under Path Pattern. Today both implementations only end the offending token
+and leave the session up.
 
 ## Plan
 
@@ -26,14 +27,17 @@ draft, with tests in both languages.
   token.
 - A refusal (AUTH_ERROR) and a peer that predates AUTH keep their current
   meaning: those end the token, not the session.
-- The same path already labels an out-of-range `Expires` a
-  ProtocolViolation that only ends the token. Closing on that too is the
-  natural generalization; confirm with the maintainer before widening beyond
-  patterns.
+- An out-of-range `Expires` closes the session the same way. Rust already
+  labels it a ProtocolViolation in `PresentToken` but only ends the token.
+  The maintainer decided this in
+  [#4380](https://github.com/moq-dev/moq/pull/4380). The draft does not say
+  what out of range means yet, so define it there, next to the other AUTH_OK
+  fields. Rust and JS must then refuse the same values.
 
-Tests in Rust and JS send a malformed and a non-canonical pattern and assert
-the session closes with PROTOCOL_VIOLATION. Add them to the interop suite if
-a shared vector is easy, since both sides must agree.
+Tests in Rust and JS send a malformed pattern, a non-canonical pattern, and an
+out-of-range `Expires`, and assert that the session closes with
+PROTOCOL_VIOLATION. If a shared vector is easy, add them to the interop suite
+as well, since both sides must agree.
 
 ## Related
 
