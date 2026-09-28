@@ -89,6 +89,9 @@ existing lite-06 ALPN.
 
 ## Quests
 
+- [Malformed grant](/quest/m1/auth/malformed-grant.md) - a malformed or
+  non-canonical grant pattern closes the session with PROTOCOL_VIOLATION in
+  Rust and JS, as the draft says
 - [Origin narrowing](/quest/m1/auth/narrowing.md) - a live grant narrows in
   place: subscriptions outside it reset, publishes outside it abort, and relay
   revalidation stops closing the session
