@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.8](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.7...moq-cli-v0.12.8) - 2026-09-27
+
+### Fixed
+
+- *(auth)* root public and mTLS rules at / ([#4318](https://github.com/moq-dev/moq/pull/4318))
+- *(cli)* close the relay connection on SIGINT and SIGTERM ([#4287](https://github.com/moq-dev/moq/pull/4287))
+- *(cli)* finish the catalog at stdin EOF ([#4303](https://github.com/moq-dev/moq/pull/4303))
+
+## [0.12.7](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.6...moq-cli-v0.12.7) - 2026-09-26
+
+### Fixed
+
+- *(cli)* keep delayed playback at the live edge ([#4241](https://github.com/moq-dev/moq/pull/4241))
+
+## [0.12.6](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.5...moq-cli-v0.12.6) - 2026-09-26
+
+### Other
+
+- updated the following local packages: moq-video, moq-auth, hang, moq-mux, moq-tokio, moq-audio, moq-hls, moq-relay, moq-rtc, moq-rtmp, moq-srt, moq-transcode
+
+## [0.12.5](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.4...moq-cli-v0.12.5) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-mux, moq-tokio, moq-audio, moq-video, moq-auth, hang, moq-hls, moq-relay, moq-rtc, moq-rtmp, moq-srt, moq-transcode
+
+## [0.12.4](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.3...moq-cli-v0.12.4) - 2026-09-25
+
+### Other
+
+- updated the following local packages: hang, moq-mux, moq-tokio, moq-audio, moq-video, moq-hls, moq-relay, moq-rtc, moq-rtmp, moq-srt, moq-transcode
+
+## [0.12.3](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.2...moq-cli-v0.12.3) - 2026-09-25
+
+### Added
+
+- *(cli)* add `moq fetch` to read one group of a track ([#3965](https://github.com/moq-dev/moq/pull/3965))
+
+### Fixed
+
+- *(net)* a broadcast exists only while announced ([#4021](https://github.com/moq-dev/moq/pull/4021))
+
+### Other
+
+- ship the moq-cli crate as moq on Docker, Nix, and winget ([#4030](https://github.com/moq-dev/moq/pull/4030))
+
+## [0.12.2](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.1...moq-cli-v0.12.2) - 2026-09-24
+
+### Added
+
+- *(moq-video)* capture cameras through PipeWire ([#4022](https://github.com/moq-dev/moq/pull/4022))
+
+### Fixed
+
+- *(cli)* play a retired audio rendition's tail alongside its replacement ([#3966](https://github.com/moq-dev/moq/pull/3966))
+
+## [0.12.1](https://github.com/moq-dev/moq/compare/moq-cli-v0.12.0...moq-cli-v0.12.1) - 2026-09-23
+
+### Fixed
+
+- *(ci)* repair nightly builds hidden behind the first failure ([#3956](https://github.com/moq-dev/moq/pull/3956))
+
 ## [0.12.0](https://github.com/moq-dev/moq/compare/moq-cli-v0.11.2...moq-cli-v0.12.0) - 2026-09-23
 
 ### Added

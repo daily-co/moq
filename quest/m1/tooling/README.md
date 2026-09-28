@@ -13,11 +13,11 @@ runs a recipe rather than a script path.
 ## Plan
 
 `just` stays as the entry point because the vocabulary (`just check`, `just
-test`, `just fix`) is in every doc, skill, and workflow. Its cost was
+fix`) is in every doc, skill, and workflow. Its cost was
 self-inflicted: logic inside recipes. The quests below are ordered and each
 requires the one before it, so they land as one line of pull requests.
 
-## Quests
+## Required
 
 - [Thin justfiles](/quest/m1/tooling/justfiles.md) - recipe bodies move to `sh/`, one impact map scopes check/fix/test, self-tests and guards are deleted
 - [Workflows call just](/quest/m1/tooling/workflows-call-just.md) - no workflow `run:` step names a `.sh`; every script a workflow needs has a recipe

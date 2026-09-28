@@ -81,6 +81,55 @@ fn bench_announce(c: &mut Criterion) {
 	group.finish();
 }
 
+/// `bench_announce` read through mounts: `publishers` routes under the fleet-wide
+/// `.svc/p0`, watched by `subscribers` project sessions that each mount it at
+/// their own `<project>/.svc`. Every mount aliases the one target, the worst
+/// case, so each announcement reaches every mounted cursor. Compare against
+/// `origin/announce` for what a mount adds per cursor.
+fn bench_announce_mounted(c: &mut Criterion) {
+	let mut group = c.benchmark_group("origin/announce_mounted");
+	for (publishers, subscribers) in SHAPES {
+		let id = BenchmarkId::from_parameter(format!("{publishers}p_{subscribers}s"));
+		group.bench_function(id, |b| {
+			let (producer, _driver) = origin::Producer::new(origin::Config::default());
+			let _publishers: Vec<_> = (0..publishers)
+				.map(|i| {
+					producer
+						.publish(format!(".svc/p0/{i}"), origin::Route::default())
+						.unwrap()
+				})
+				.collect();
+			let mut cursors: Vec<announce::Consumer> = (0..subscribers)
+				.map(|project| {
+					producer
+						.mount(format!("p{project}/.svc"), ".svc/p0")
+						.unwrap()
+						.scope(format!("p{project}"), &Patterns::from(Pattern::all()))
+						.unwrap()
+						.consume()
+						.with_hidden(true)
+						.announced()
+				})
+				.collect();
+			for cursor in &mut cursors {
+				while cursor.next().now_or_never().flatten().is_some() {}
+			}
+
+			b.iter(|| {
+				let handle = producer.publish(".svc/p0/incoming", origin::Route::default()).unwrap();
+				for cursor in &mut cursors {
+					cursor.next().now_or_never().flatten().expect("announce delivered");
+				}
+				drop(handle);
+				for cursor in &mut cursors {
+					cursor.next().now_or_never().flatten().expect("retract delivered");
+				}
+			});
+		});
+	}
+	group.finish();
+}
+
 /// A relay's own stats fan-out: `.stats/<project>/node/<node>` for every project
 /// on every node, watched by one cursor per peer, each scoped to one project.
 /// Cursors differ in scope, so none can be collapsed, and an announcement under
@@ -146,7 +195,9 @@ fn bench_announce_duplicate(c: &mut Criterion) {
 			let _routes: Vec<_> = (1..=duplicates)
 				.map(|peer| producer.dynamic(PATH, peer_route(peer as u64, INCUMBENT_COST)).unwrap())
 				.collect();
-			let mut cursors: Vec<announce::Consumer> = (0..subscribers).map(|_| consumer.announced()).collect();
+			let mut cursors: Vec<announce::Consumer> = (0..subscribers)
+				.map(|_| consumer.clone().with_hidden(true).announced())
+				.collect();
 			for cursor in &mut cursors {
 				while cursor.next().now_or_never().flatten().is_some() {}
 			}
@@ -240,11 +291,8 @@ fn bench_serve_idle(c: &mut Criterion) {
 				})
 				.collect();
 			b.iter(|| {
-				// A fresh waiter per sweep. A live registration keeps the waiter's
-				// `Weak` in each route's list until it drops, so a waiter reused
-				// across sweeps would stack one per route per iteration. Production
-				// retires the parked waiter the same way: `Park::hold` drops a
-				// still-registered waiter before the next poll registers again.
+				// A fresh waiter per sweep, so every poll pays a real registration: a
+				// reused one would find itself still parked on each route and skip it.
 				let waiter = kio::Waiter::noop();
 				// Nothing is queued, so every poll parks again: the idle sweep.
 				for dynamic in &dynamics {
@@ -316,7 +364,7 @@ fn bench_request(c: &mut Criterion) {
 }
 
 /// Publisher handoff at one path: a subscriber is reading from one local
-/// source when a second attaches at the same path and takes over (newest
+/// source when a second announces at the same path and takes over (newest
 /// wins). Measured from the standby's attach to the subscriber receiving its
 /// first group, with `publishers` unrelated broadcasts in the table.
 fn bench_handoff(c: &mut Criterion) {
@@ -340,7 +388,7 @@ fn bench_handoff(c: &mut Criterion) {
 				runtime.block_on(async {
 					let mut total = Duration::ZERO;
 					for _ in 0..iterations {
-						let incumbent = producer.create_broadcast("room/live").unwrap();
+						let incumbent = producer.publish("room/live", origin::Route::default()).unwrap();
 						let track = incumbent.create_track("video", None).unwrap();
 						let mut first = track.append_group().unwrap();
 						first.write_frame(Timestamp::ZERO, b"one".as_ref()).unwrap();
@@ -356,12 +404,14 @@ fn bench_handoff(c: &mut Criterion) {
 						let mut second = track.create_group(moq_net::group::Info { sequence: 1 }).unwrap();
 						second.write_frame(Timestamp::ZERO, b"two".as_ref()).unwrap();
 						second.finish().unwrap();
+						// Announcing is what makes the standby a route the front can take.
+						standby.announce(origin::Route::default()).unwrap();
 						subscription.recv_group().await.unwrap().expect("standby group");
 						total += started.elapsed();
 
 						drop(subscription);
-						incumbent.finish();
-						standby.finish();
+						incumbent.close();
+						standby.close();
 						// Wait for the front to close so the next iteration starts a fresh one.
 						resolved.closed().await;
 					}
@@ -376,6 +426,7 @@ fn bench_handoff(c: &mut Criterion) {
 criterion_group!(
 	benches,
 	bench_announce,
+	bench_announce_mounted,
 	bench_announce_fleet,
 	bench_announce_duplicate,
 	bench_announce_fronts,

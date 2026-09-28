@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5](https://github.com/moq-dev/moq/compare/moq-json-v0.5.4...moq-json-v0.5.5) - 2026-09-27
+
+### Added
+
+- *(mux)* detect delay and jitter on JSON and binary tracks ([#4270](https://github.com/moq-dev/moq/pull/4270))
+
+## [0.5.4](https://github.com/moq-dev/moq/compare/moq-json-v0.5.3...moq-json-v0.5.4) - 2026-09-26
+
+### Other
+
+- updated the following local packages: kio, moq-net
+
+## [0.5.3](https://github.com/moq-dev/moq/compare/moq-json-v0.5.2...moq-json-v0.5.3) - 2026-09-26
+
+### Other
+
+- updated the following local packages: moq-net
+
+## [0.5.2](https://github.com/moq-dev/moq/compare/moq-json-v0.5.1...moq-json-v0.5.2) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-net
+
+## [0.5.1](https://github.com/moq-dev/moq/compare/moq-json-v0.5.0...moq-json-v0.5.1) - 2026-09-25
+
+### Other
+
+- *(json)* skip unchanged root entries in the snapshot diff ([#4020](https://github.com/moq-dev/moq/pull/4020))
+
+## [0.5.0](https://github.com/moq-dev/moq/compare/moq-json-v0.4.2...moq-json-v0.5.0) - 2026-09-25
+
+### Fixed
+
+- *(moq-json)* reject trailing data after a window frame ([#4029](https://github.com/moq-dev/moq/pull/4029))
+
+### Other
+
+- *(json)* track the error path only when a snapshot decode fails ([#4019](https://github.com/moq-dev/moq/pull/4019))
+- *(moq-json)* track the window decode path only to explain a failure ([#4028](https://github.com/moq-dev/moq/pull/4028))
+
+## [0.4.2](https://github.com/moq-dev/moq/compare/moq-json-v0.4.1...moq-json-v0.4.2) - 2026-09-24
+
+### Other
+
+- updated the following local packages: moq-net
+
+## [0.4.1](https://github.com/moq-dev/moq/compare/moq-json-v0.4.0...moq-json-v0.4.1) - 2026-09-23
+
+### Added
+
+- *(ffi)* add a TrackDemand handle and expose demand() on JSON producers ([#3949](https://github.com/moq-dev/moq/pull/3949))
+
 ## [0.4.0](https://github.com/moq-dev/moq/compare/moq-json-v0.3.12...moq-json-v0.4.0) - 2026-09-23
 
 ### Added

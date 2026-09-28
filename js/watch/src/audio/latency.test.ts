@@ -14,6 +14,10 @@ describe("target", () => {
 		expect(target({ measured: ms(300), advertised: ms(200), frame: ms(20) })).toBe(ms(320));
 	});
 
+	it("adds the catalog delay on top, since the measurement cancels a cross-track offset", () => {
+		expect(target({ measured: ms(40), advertised: ms(60), frame: ms(20), delay: ms(200) })).toBe(ms(280));
+	});
+
 	it("is the measured term alone when nothing else is known", () => {
 		expect(target({ measured: ms(100) })).toBe(ms(100));
 	});

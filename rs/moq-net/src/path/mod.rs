@@ -150,7 +150,7 @@ impl<'a> Path<'a> {
 	}
 
 	// A copy of this path skipping the first `n` bytes, reusing the shared buffer when possible.
-	fn slice_from(&'a self, n: usize) -> Path<'a> {
+	pub(crate) fn slice_from(&'a self, n: usize) -> Path<'a> {
 		match &self.0 {
 			Repr::Borrowed(s) => Path(Repr::Borrowed(&s[n..])),
 			Repr::Shared { buf, start } => Path(Repr::Shared {
@@ -261,6 +261,12 @@ impl<'a> Path<'a> {
 		} else {
 			Some((s, Path::empty()))
 		}
+	}
+
+	/// Whether a segment starts with `.`, which hides the path from announce
+	/// discovery below the requested prefix.
+	pub(crate) fn is_hidden(&self) -> bool {
+		self.parts().any(|part| part.starts_with('.'))
 	}
 
 	/// The normalized path as a string, with no leading or trailing slash.

@@ -1,11 +1,15 @@
 {
 	"name": "@moq/publish",
 	"type": "module",
-	"version": "0.4.7",
+	"version": "0.5.1",
 	"jsr": false,
 	"description": "Publish Media over QUIC broadcasts",
 	"license": "(MIT OR Apache-2.0)",
-	"repository": "github:moq-dev/moq",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/moq-dev/moq.git",
+		"directory": "js/publish"
+	},
 	"exports": {
 		".": "./src/index.ts",
 		"./element": "./src/element.ts",
@@ -29,7 +33,7 @@
 		"@moq/json": "workspace:^",
 		"@moq/net": "workspace:^",
 		"@moq/signals": "workspace:^",
-		"mediabunny": "^1.56.2"
+		"mediabunny": "^1.58.1"
 	},
 	"devDependencies": {
 		"@types/audioworklet": "^0.0.100",

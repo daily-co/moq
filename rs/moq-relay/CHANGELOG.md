@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.8](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.7...moq-relay-v0.15.8) - 2026-09-27
+
+### Added
+
+- *(net)* the SETUP AUTHORIZATION TOKEN option reaches the verifier ([#4278](https://github.com/moq-dev/moq/pull/4278))
+
+### Fixed
+
+- *(auth)* root public and mTLS rules at / ([#4318](https://github.com/moq-dev/moq/pull/4318))
+
+## [0.15.7](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.6...moq-relay-v0.15.7) - 2026-09-26
+
+### Added
+
+- end a broadcast with close() in every language ([#4031](https://github.com/moq-dev/moq/pull/4031))
+
+### Fixed
+
+- *(auth)* keep accepted grants on fixed expiry deadlines ([#4237](https://github.com/moq-dev/moq/pull/4237))
+
+### Other
+
+- origin narrowing joins auth, drop relay peer set, plan hop-list routing ([#4158](https://github.com/moq-dev/moq/pull/4158))
+- rename CLAUDE.md to AGENTS.md ([#4235](https://github.com/moq-dev/moq/pull/4235))
+- *(relay)* run the outage lease test on the real clock ([#4244](https://github.com/moq-dev/moq/pull/4244))
+
+## [0.15.6](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.5...moq-relay-v0.15.6) - 2026-09-26
+
+### Other
+
+- updated the following local packages: moq-net, moq-auth, moq-tokio, moq-uring, moq-stats
+
+## [0.15.5](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.4...moq-relay-v0.15.5) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-net, moq-tokio, moq-auth, moq-uring, moq-stats
+
+## [0.15.4](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.3...moq-relay-v0.15.4) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-net, moq-tokio, moq-uring, moq-stats
+
+## [0.15.3](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.2...moq-relay-v0.15.3) - 2026-09-25
+
+### Added
+
+- *(net)* hide dot-named broadcasts from discovery (moq-lite-07) ([#4060](https://github.com/moq-dev/moq/pull/4060))
+- *(relay)* retag a live session's stats when a re-check moves its tier ([#4057](https://github.com/moq-dev/moq/pull/4057))
+- *(net)* an announce says whether its route entered here or from a peer ([#3972](https://github.com/moq-dev/moq/pull/3972))
+- *(cli)* add `moq fetch` to read one group of a track ([#3965](https://github.com/moq-dev/moq/pull/3965))
+- *(moq-uring)* report a session's peer address and SNI to auth ([#4056](https://github.com/moq-dev/moq/pull/4056))
+
+### Other
+
+- *(relay)* run the drills over a seeded, impaired UDP path ([#4054](https://github.com/moq-dev/moq/pull/4054))
+
+## [0.15.2](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.1...moq-relay-v0.15.2) - 2026-09-24
+
+### Fixed
+
+- *(relay)* fix the lease deadline on tokio's clock and pause the outage test ([#3969](https://github.com/moq-dev/moq/pull/3969))
+
+## [0.15.1](https://github.com/moq-dev/moq/compare/moq-relay-v0.15.0...moq-relay-v0.15.1) - 2026-09-23
+
+### Fixed
+
+- *(ci)* repair nightly builds hidden behind the first failure ([#3956](https://github.com/moq-dev/moq/pull/3956))
+- *(relay)* follow usage-rs 6.11.1 moving env aliases under FlagMeta::extra ([#4006](https://github.com/moq-dev/moq/pull/4006))
+- *(relay)* gate the per-worker accept loop on _quic ([#3968](https://github.com/moq-dev/moq/pull/3968))
+
+### Other
+
+- *(drill)* retarget mutations after the dev merge ([#3953](https://github.com/moq-dev/moq/pull/3953))
+- *(quest)* return to milestones ([#3962](https://github.com/moq-dev/moq/pull/3962))
+
 ## [0.15.0](https://github.com/moq-dev/moq/compare/moq-relay-v0.14.18...moq-relay-v0.15.0) - 2026-09-23
 
 ### Added

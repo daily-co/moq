@@ -127,7 +127,7 @@ def test_publish_media_lifecycle():
     media = broadcast.publish_audio(moq.AudioFormat.OPUS, opus_head())
     media.write_frame(b"opus frame", 1000)
     media.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 def test_publish_media_cut_and_seek():
@@ -146,9 +146,11 @@ def test_publish_media_cut_and_seek():
     # The same boundary, with the next group explicitly numbered.
     media.write_frame(b"opus frame", 60_000)
     media.seek(42)
+    media.discontinuity()
+    media.write_frame(b"resumed opus frame", 100_000)
 
     media.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 def test_video_properties_use_defaulted_fields():
@@ -157,7 +159,7 @@ def test_video_properties_use_defaulted_fields():
     assert properties.display is None
     assert properties.flip is None
     broadcast.set_video_properties(properties)
-    broadcast.finish()
+    broadcast.close()
 
 
 def test_audio_rejects_bad_init_bytes():
@@ -237,6 +239,21 @@ async def test_video_publish_consume():
         break
 
 
+async def test_video_publish_named_track():
+    origin = moq.OriginProducer()
+    broadcast = create_announced(origin, "video-named-test")
+    media = broadcast.publish_video(moq.VideoFormat.AVC3, h264_init(), track="hd")
+    assert media.name == "hd"
+
+    consumer = origin.consume()
+
+    async for announcement in consumer.announced():
+        broadcast_consumer = await consumer.request_broadcast(announcement.prefix)
+        catalog = await broadcast_consumer.catalog()
+        assert list(catalog.video.keys()) == ["hd"]
+        break
+
+
 async def test_multiple_frames_ordering():
     origin = moq.OriginProducer()
     broadcast = create_announced(origin, "ordering-test")
@@ -288,12 +305,19 @@ async def test_catalog_update_on_new_track():
         break
 
 
-def test_finish_closes_producer():
+def test_close_twice_is_a_noop():
     broadcast = moq.BroadcastProducer()
     _media = broadcast.publish_audio(moq.AudioFormat.OPUS, opus_head())
-    broadcast.finish()
+    broadcast.close()
+    broadcast.close()
 
     with pytest.raises(Exception):
+        broadcast.publish_audio(moq.AudioFormat.OPUS, opus_head())
+
+
+def test_finish_is_deprecated():
+    broadcast = moq.BroadcastProducer()
+    with pytest.deprecated_call():
         broadcast.finish()
 
 
@@ -315,7 +339,7 @@ def test_publish_lifecycle():
     track = broadcast.publish_track("status")
     track.write_frame(b'{"cmd": "ready"}', 0)
     track.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 async def test_publish_track_info_and_subscription():
@@ -505,7 +529,7 @@ async def test_dynamic_broadcast_request():
     assert frame.payload == payload
     assert frame.timestamp_us == 20_000
     track.finish()
-    served.finish()
+    served.close()
 
 
 async def test_dynamic_broadcast_request_can_reject():
@@ -1060,7 +1084,7 @@ def test_encode_audio_with_opus_object():
         producer.write(moq.AudioFrame(timestamp_us=0, data=bytes(960 * 4)))
         assert producer.name == "mic"
         producer.finish()
-        broadcast.finish()
+        broadcast.close()
 
 
 async def test_decode_video_format():
@@ -1114,38 +1138,37 @@ async def test_decode_video_format():
     i420.cancel()
     packed.cancel()
     video.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
-async def test_unannounce_keeps_local_discovery():
+async def test_broadcast_is_reachable_only_while_announced():
     origin = moq.OriginProducer()
     broadcast = origin.create_broadcast("live")
     track = broadcast.publish_track("events")
-
     consumer = origin.consume()
+    with pytest.raises(Exception):
+        await asyncio.wait_for(consumer.request_broadcast("live"), timeout=5.0)
+
+    broadcast.announce()
     announced = consumer.announced()
     first = await asyncio.wait_for(anext(announced), timeout=5.0)
     assert first.prefix == "live"
     assert first.active
-    assert first.route.cost == 0
-
-    broadcast.announce(moq.Route(cost=3))
-    advertised = await asyncio.wait_for(anext(announced), timeout=5.0)
-    assert advertised.active
-    assert advertised.route.cost == 3
 
     broadcast.unannounce()
-    local = await asyncio.wait_for(anext(announced), timeout=5.0)
-    assert local.prefix == "live"
-    assert local.active
-    assert local.route.cost == 0
+    retracted = await asyncio.wait_for(anext(announced), timeout=5.0)
+    assert retracted.prefix == "live"
+    assert not retracted.active
+    with pytest.raises(Exception):
+        await asyncio.wait_for(consumer.request_broadcast("live"), timeout=5.0)
 
+    broadcast.announce()
+    back = await asyncio.wait_for(anext(announced), timeout=5.0)
+    assert back.active
     await asyncio.wait_for(consumer.request_broadcast("live"), timeout=5.0)
-    track.finish()
-    broadcast.finish()
-    ended = await asyncio.wait_for(anext(announced), timeout=5.0)
-    assert not ended.active
     announced.cancel()
+    track.finish()
+    broadcast.close()
 
 
 async def test_announced_pattern_captures():
@@ -1166,8 +1189,8 @@ async def test_announced_pattern_captures():
 
     announced.cancel()
     dynamic.cancel()
-    audio.finish()
-    chat.finish()
+    audio.close()
+    chat.close()
 
 
 async def test_dynamic_serves_a_request_under_a_prefix():
@@ -1182,7 +1205,7 @@ async def test_dynamic_serves_a_request_under_a_prefix():
     request.accept(served)
     await asyncio.wait_for(pending, timeout=5.0)
     dynamic.cancel()
-    served.finish()
+    served.close()
 
 
 async def test_dynamic_and_json_handles_are_async_context_managers():
@@ -1221,4 +1244,4 @@ async def test_dynamic_and_json_handles_are_async_context_managers():
     snapshot.finish()
     stream.finish()
     track.finish()
-    broadcast.finish()
+    broadcast.close()

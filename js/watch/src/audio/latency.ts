@@ -8,17 +8,23 @@ export interface Target {
 	advertised?: Time.Milli;
 	/** The codec's frame duration, if known. */
 	frame?: Time.Milli;
+	/** The catalog `delay`: how far this rendition trails the broadcast's earliest one, if any. */
+	delay?: Time.Milli;
 }
 
 /**
- * The "auto" playout target: the measured term floored by the advertised span, plus one frame.
+ * The "auto" playout target: the measured term floored by the advertised span, plus one frame, plus
+ * the rendition's catalog delay.
  *
- * A floor rather than a sum, because the receiver's measurement already contains the publisher's
- * flush delay. See doc/concept/audio-jitter.md.
+ * The advertised span is a floor rather than an addend, because the receiver's measurement already
+ * contains the publisher's flush delay. The catalog delay is an addend, because the measurement is
+ * taken against the track's own fastest frame and cancels any offset between tracks. See
+ * doc/concept/audio-jitter.md.
  */
 export function target(props: Target): Time.Milli {
 	const floored = Time.Milli.max(props.measured, props.advertised ?? Time.Milli.zero);
-	return Time.Milli.add(floored, props.frame ?? Time.Milli.zero);
+	const own = Time.Milli.add(floored, props.frame ?? Time.Milli.zero);
+	return Time.Milli.add(own, props.delay ?? Time.Milli.zero);
 }
 
 /**

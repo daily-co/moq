@@ -27,7 +27,7 @@ publisher of a `.hang` broadcast can learn whether its viewers played it.
   as one JSON line tagged with its track, with `--track` selecting one and
   `--compressed` reading the `.z` twins. It is the one sink that does not go
   through `.hang` catalog discovery, so route it around `catalog_format`.
-- `doc/bin/cli.md` documents the flag and the sink. The smoke media test
+- `doc/bin/cli.md` documents the flag and the sink. The media test
   publishes with `--stats`, plays with `--stats`, and reads both with
   `moq export stats`, asserting the subscriber's liveness advances and the
   publisher's frame count matches what was sent.
@@ -36,7 +36,3 @@ publisher of a `.hang` broadcast can learn whether its viewers played it.
 
 - [Schema and library](/quest/m1/qos/stats/schema.md) - the producer and the
   media types
-
-## Closes
-
-- [#2734](https://github.com/moq-dev/moq/issues/2734) - close this issue when the quest finishes

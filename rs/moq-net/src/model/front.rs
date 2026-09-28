@@ -105,7 +105,8 @@ pub(super) enum Action {
 	/// Drop the source copy of `track` but keep the delivered groups spliced,
 	/// so resume stays seamless while nobody reads.
 	Park { track: Arc<str> },
-	/// Drop the delivered groups of `track` too: the linger expired unread.
+	/// Drop the source copy of `track` and every delivered group: the linger expired
+	/// unread, or the source is local and keeps its own cache.
 	Release { track: Arc<str> },
 	/// The logical track completed.
 	Finish { track: Arc<str> },
@@ -113,8 +114,9 @@ pub(super) enum Action {
 	Abort { track: Arc<str>, err: Error },
 	/// Arm (or clear) the deadline the front wants to be woken at.
 	Arm { at: Option<Instant> },
-	/// The front is over: abort every spliced track and reject the parked
-	/// requesters with `err`.
+	/// The front is over: reject the parked requesters with `err`, leave each
+	/// read track to end with the copy it is spliced from or still waiting on,
+	/// abort the rest with `err`, and drop every source.
 	End { err: Error },
 }
 
@@ -130,8 +132,9 @@ pub(super) enum Identity {
 	/// rather than being spliced into one that is over.
 	Local,
 	/// The serving route's first hop was absent or [`Hop::UNKNOWN`], which
-	/// identifies nobody: the front cannot resume, so its source ending ends it.
-	Anonymous,
+	/// identifies nobody: the front cannot resume through any other route, so
+	/// its source ending, or `route` leaving the table, ends it.
+	Anonymous { route: u64 },
 	/// The first hop of the serving route. Routes sharing it are the same
 	/// origin reached another way and safe to resume through.
 	Publisher(Hop),
@@ -146,8 +149,8 @@ pub(super) enum Pin {
 	Local,
 	/// Only routes originated by this first hop.
 	Publisher(Hop),
-	/// Nothing: the front never re-selects.
-	None,
+	/// Only this route: the front never fails over.
+	Route(u64),
 }
 
 impl Identity {
@@ -155,7 +158,7 @@ impl Identity {
 		match self {
 			Self::Undetermined => Pin::Any,
 			Self::Local => Pin::Local,
-			Self::Anonymous => Pin::None,
+			Self::Anonymous { route } => Pin::Route(route),
 			Self::Publisher(hop) => Pin::Publisher(hop),
 		}
 	}
@@ -199,7 +202,8 @@ pub(super) struct Front {
 	serving_closing: bool,
 	/// The route an upstream request is in flight through.
 	upstream: Option<u64>,
-	/// Routes that refused the path while another source was serving.
+	/// Routes excluded from selection: they refused the path while another
+	/// source was serving, or their source ended while still advertised.
 	refused: HashSet<u64>,
 	/// Why the last candidate fell through, reported if the front ends unresolved.
 	last_err: Option<Error>,
@@ -241,7 +245,7 @@ impl Front {
 		self.identity.pin()
 	}
 
-	/// The routes that refused the path; the driver skips them when selecting.
+	/// The routes excluded from selection; the driver skips them.
 	pub(super) fn refused_routes(&self) -> &HashSet<u64> {
 		&self.refused
 	}
@@ -336,17 +340,16 @@ impl Front {
 				self.upstream = Some(candidate.route);
 				actions.push(Action::Request { route: candidate.route });
 			}
-			// Nothing qualifies. A live source keeps serving (its route may
-			// return); without one the front is over.
+			// Nothing qualifies: the front is over, even with a live source. Its
+			// route left the table and nothing with the same content replaced it,
+			// so it serves nobody new; a later announcement gets a fresh front.
 			None => {
 				self.upstream = None;
-				if self.serving.is_none() {
-					let err = match self.identity {
-						Identity::Undetermined => self.last_err.take().unwrap_or(Error::Unroutable),
-						_ => self.last_err.take().unwrap_or(Error::Dropped),
-					};
-					self.end(err, actions);
-				}
+				let err = match self.identity {
+					Identity::Undetermined => self.last_err.take().unwrap_or(Error::Unroutable),
+					_ => self.last_err.take().unwrap_or(Error::Dropped),
+				};
+				self.end(err, actions);
 			}
 		}
 	}
@@ -422,17 +425,21 @@ impl Front {
 		self.identity = match (candidate.local, candidate.first) {
 			(true, _) => Identity::Local,
 			(false, Some(hop)) if hop != Hop::UNKNOWN => Identity::Publisher(hop),
-			(false, _) => Identity::Anonymous,
+			(false, _) => Identity::Anonymous { route: candidate.route },
 		};
 	}
 
 	fn source_closed(&mut self, source: u64, actions: &mut Vec<Action>) {
-		let Some((serving, _)) = self.serving else {
+		let Some((serving, route)) = self.serving else {
 			return;
 		};
 		if serving != source {
 			return;
 		}
+		// A standing route can outlive the source it produced. Asking it again
+		// would re-request the broadcast that just ended; another route to the
+		// same publisher may still resume it.
+		self.refused.insert(route);
 		self.serving = None;
 		self.serving_closing = false;
 		actions.push(Action::Detach { source });
@@ -446,7 +453,7 @@ impl Front {
 		match self.identity {
 			// A local publisher ending ends its broadcast; a newcomer at the
 			// path gets a fresh one. An anonymous source can never be resumed.
-			Identity::Local | Identity::Anonymous | Identity::Undetermined => self.end(Error::Dropped, actions),
+			Identity::Local | Identity::Anonymous { .. } | Identity::Undetermined => self.end(Error::Dropped, actions),
 			Identity::Publisher(_) => actions.push(Action::Reselect),
 		}
 	}
@@ -586,6 +593,13 @@ impl Front {
 		};
 		track.used = false;
 		match track.state {
+			// A local source keeps its own cache, so a warm copy would only be a staler
+			// duplicate of it: drop the copy outright, and a returning reader re-splices
+			// the source and reads its cache against the real live edge.
+			TrackState::Spliced { .. } if self.identity == Identity::Local => {
+				track.state = TrackState::Idle;
+				actions.push(Action::Release { track: name });
+			}
 			// Drop the copy so the source goes idle at once; the delivered
 			// groups stay spliced for the linger.
 			TrackState::Spliced { .. } => {
@@ -626,9 +640,9 @@ impl Front {
 			return;
 		}
 		self.ended = true;
-		if let Some((source, _)) = self.serving.take() {
-			actions.push(Action::Detach { source });
-		}
+		// No Detach: the driver keeps the serving source's copies until End, so a
+		// track still waiting on its info can be spliced to the copy it asked.
+		self.serving = None;
 		actions.push(Action::End { err });
 	}
 }
@@ -804,6 +818,7 @@ mod tests {
 			front.step(Event::SourceClosed { source: 100 }),
 			&[Action::Detach { source: 100 }, Action::Reselect],
 		);
+		assert!(front.refused_routes().contains(&1));
 		assert_actions(
 			front.step(Event::Selected {
 				best: Some(remote(3, 10)),
@@ -820,6 +835,46 @@ mod tests {
 				track: name("video"),
 				source: 300,
 			}],
+		);
+	}
+
+	/// A live source does not keep a front alive once its route is gone: nothing
+	/// new may be served from content nobody announces.
+	#[test]
+	fn retracted_route_with_no_replacement_ends_a_live_front() {
+		let mut front = serving(local(1), 100);
+		assert_actions(
+			front.step(Event::Selected {
+				best: None,
+				serving_closing: false,
+			}),
+			&[Action::End { err: Error::Dropped }],
+		);
+	}
+
+	/// An anonymous front can only ever serve from the route it started on, and
+	/// that route standing keeps it serving.
+	#[test]
+	fn anonymous_front_keeps_its_standing_route() {
+		let candidate = Candidate {
+			route: 1,
+			first: Some(Hop::UNKNOWN),
+			local: false,
+		};
+		let mut front = serving(candidate, 100);
+		assert_actions(
+			front.step(Event::Selected {
+				best: Some(candidate),
+				serving_closing: false,
+			}),
+			&[],
+		);
+		assert_actions(
+			front.step(Event::Selected {
+				best: None,
+				serving_closing: false,
+			}),
+			&[Action::End { err: Error::Dropped }],
 		);
 	}
 
@@ -844,7 +899,7 @@ mod tests {
 			local: false,
 		};
 		let mut front = serving(candidate, 100);
-		assert_eq!(front.pin(), Pin::None);
+		assert_eq!(front.pin(), Pin::Route(1));
 		assert_actions(
 			front.step(Event::SourceClosed { source: 100 }),
 			&[Action::Detach { source: 100 }, Action::End { err: Error::Dropped }],
@@ -1129,7 +1184,7 @@ mod tests {
 				best: Some(local(2)),
 				serving_closing: true,
 			}),
-			&[Action::Detach { source: 100 }, Action::End { err: Error::Dropped }],
+			&[Action::End { err: Error::Dropped }],
 		);
 	}
 
@@ -1145,10 +1200,7 @@ mod tests {
 	#[test]
 	fn teardown_ends_everything() {
 		let mut front = serving(remote(1, 10), 100);
-		assert_actions(
-			front.step(Event::Closed),
-			&[Action::Detach { source: 100 }, Action::End { err: Error::Dropped }],
-		);
+		assert_actions(front.step(Event::Closed), &[Action::End { err: Error::Dropped }]);
 	}
 
 	/// Every sequence of events up to a small depth, over a small alphabet,

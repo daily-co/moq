@@ -3,6 +3,7 @@ import * as Container from "@moq/hang/container";
 import * as Moq from "@moq/net";
 import { Effect, type Getter, getter, type Inputs, type Readonlys, Signal } from "@moq/signals";
 import { CatalogProducer } from "./catalog";
+import { Baseline } from "./jitter";
 import { type Kind, Rendition } from "./rendition";
 
 // Signals the broadcast reads. Whoever owns the backing Signal (the element, or another component
@@ -15,8 +16,9 @@ export type BroadcastInput = {
 	// Whether to create the broadcast. Defaults to true.
 	enabled: Getter<boolean>;
 
-	// Whether to advertise the broadcast. Defaults to true. The flip rather than a gate on
-	// creating it: tracks can be populated while this is false, then announced once ready.
+	// Whether to announce the broadcast. Defaults to true. Until it is announced nobody can
+	// see or subscribe to it. The flip rather than a gate on creating it: tracks can be
+	// populated while this is false, then announced once ready.
 	announce: Getter<boolean>;
 
 	// The broadcast name.
@@ -69,6 +71,12 @@ export class Broadcast {
 	// Reacquire it via an effect, since a rename swaps in a fresh producer.
 	readonly net = new Signal<Moq.Broadcast.Producer | undefined>(undefined);
 
+	/**
+	 * @internal The recent minimum flush lateness across every rendition, which each encoder
+	 * measures its catalog `delay` against. Per broadcast, so a swapped one starts fresh.
+	 */
+	readonly baseline = new Baseline();
+
 	// The registered renditions keyed by full track name. A plain object so deep-equality detects a
 	// key add/remove; the Rendition values compare by identity, which is stable.
 	readonly #renditions = new Signal<Record<string, Rendition<unknown>>>({});
@@ -110,7 +118,8 @@ export class Broadcast {
 	 *
 	 * Set the returned rendition's `config` to a {@link Catalog.TextConfig}, then write one cue per
 	 * group into its `track` with `Hang.Container.Legacy.Producer` (each cue is a keyframe, so it opens
-	 * its own group). See the module docs for the cue framing.
+	 * its own group). See the module docs for the cue framing. Stamp cues with `performance.now()` in
+	 * microseconds, the broadcast clock the catalog advertises.
 	 */
 	text(name: string): Rendition<Catalog.TextConfig> {
 		return this.#register<Catalog.TextConfig>(name, "text");

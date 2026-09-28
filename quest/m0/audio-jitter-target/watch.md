@@ -20,13 +20,11 @@ audio subscription asks for at least the estimator's 2 s ceiling, as native
 does; a subscription cut to the target hid every frame later than it.
 `demo/web` sets no delay and `js/watch` stores none, so a fresh tile runs auto.
 
-- Replay the recorded traces from #3477 rather than synthetic ones of the same
-  shape. The raw ndjson was attached to release `rt-audio-traces-2026-09-06` on
-  the reporter's fork (`fperex/moq`), which no longer exists; the
-  `debug/rt-audio` branch keeps only per-run summaries and event logs. Ask the
-  reporter to re-attach them, or record fresh ones with the
-  [browser harness](/quest/m1/audio-quality-harness/browser.md), then trim a
-  copy into the repository and replay it in `js/watch/src/audio/replay.test.ts`.
+- Replay recorded traces rather than synthetic ones of the same shape. The
+  #3477 traces are gone, so record fresh ones with the [browser
+  harness](/quest/m0/audio-quality-harness/browser.md) (decided with the
+  maintainer instead of asking the reporter). Trim a copy into the repository
+  and replay it through both rings in `js/watch/src/audio/replay.test.ts`.
 - Manual run against the public relay on Chrome and Safari, the two rows the
   issue measured, with a real microphone and 40 ms or more of added RTT. Watch
   the stats panel's audio underrun counter and the latency tab's auto readout,
@@ -37,6 +35,10 @@ does; a subscription cut to the target hid every frame later than it.
   the suspects are `writeFrame` opening a group per audio frame under
   WebTransport stream credit and the main-thread task queue delivering encoder
   output. Turn that into its own quest rather than fixing it here.
+
+## Required
+
+- [Browser harness](/quest/m0/audio-quality-harness/browser.md) - records the arrival traces this quest replays
 
 ## Related
 

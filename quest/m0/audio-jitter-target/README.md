@@ -25,6 +25,18 @@ additive and target `main`: the native knob is a new field on a
 `#[non_exhaustive]` struct, and the browser estimator is a new module plus a
 new `spread` observation.
 
+Decided for landing: the line merges to `main`, not `dev`, with a changelog
+note for two behavior changes treated as fixes. `@moq/watch` `Sync` takes a
+numeric delay literally instead of adding the rendition delay on top
+([#3954](https://github.com/moq-dev/moq/pull/3954)), and `moq play --delay`
+defaults to `auto` instead of `100ms`
+([#3967](https://github.com/moq-dev/moq/pull/3967)). The old additive delay
+was wrong, and both compile unchanged for existing callers. Keep the line
+current by merging `main` in; never rebase the shared branch. The raw #3477
+traces are gone, so record fresh traces with the [audio quality
+harness](/quest/m0/audio-quality-harness/README.md) instead of asking the
+reporter.
+
 The algorithm is written down at `doc/concept/audio-jitter.md`, with a
 conformance corpus beside it that both implementations will read.
 
@@ -36,11 +48,12 @@ remains of the watch quest is proving it in a real browser.
 Native is done: `rs/moq-audio` estimates the target behind
 `decode::Options::delay` and `decode::Consumer::delay`, passes the corpus both
 directly and through the decode path, and `moq play --delay auto` holds it.
-What the line still owes once the watch quest lands: its trimmed #3477 trace
+What the line still owes once the watch quest lands: its recorded trace
 replayed through the native decode path too, asserting the same target series
-the browser's `replay.test.ts` does.
+the browser's `replay.test.ts` does. Grading native playback against the
+harness budgets is [Audio quality native](/quest/m1/audio-quality-native.md).
 
-## Quests
+## Required
 
 - [Watch](/quest/m0/audio-jitter-target/watch.md) - the browser's measured target, proven on Chrome and Safari against the public relay
 
@@ -50,7 +63,6 @@ the browser's `replay.test.ts` does.
 
 ## Related
 
-- [Jitter clock](/quest/m1/jitter-flush-clock.md) - the advertised jitter (#3513 landed the flush span), which `doc/concept/audio-jitter.md` settles as a floor on the measured target
-- [Audio quality harness](/quest/m1/audio-quality-harness/README.md) - the automated proof, built on its own schedule
+- [Audio quality harness](/quest/m0/audio-quality-harness/README.md) - the automated proof, and the recorder of the traces the watch quest replays
 - [Time stretch](/quest/m1/watch-audio-time-stretch.md) - inaudible convergence, on top of this
 - [Plan: A/V clock](/quest/m0/plan-av-clock.md) - the clock this target eventually feeds

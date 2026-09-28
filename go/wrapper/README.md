@@ -77,6 +77,10 @@ for media tracks whose timescale should be selected by the importer.
 `WithVideoHint(moq.VideoHint{...})` for video catalog fields that are known
 before the stream reveals them.
 
+`WithAudioTrack(name)` / `WithVideoTrack(name)` name the track instead of
+deriving a unique name from the format. A duplicate name fails, and the
+`OnTrack` variants refuse it because the request already names the track.
+
 JSON tracks are available in two modes. `PublishJSONSnapshot` / `SubscribeJSONSnapshot`
 carry lossy latest state, while `PublishJSONStream` / `SubscribeJSONStream` carry every
 record in order. Producers accept any `encoding/json` value; consumers return
@@ -111,7 +115,7 @@ deliver them, and there is no stream fallback.
 
 ## Versioning
 
-`VERSION` holds the human-owned `MAJOR.MINOR` line (the wrapper API version). Bump it in a PR when the wrapper's own API changes. The patch number is derived by CI from the existing mirror tags, so every release (whether triggered by a wrapper change or by a new `moq.dev/moq-ffi`) just takes the next patch on that line.
+`VERSION` holds the human-owned `MAJOR.MINOR` line (the wrapper API version). Bump it in a PR only for a breaking change to the wrapper's own API. The patch number is derived by CI from the existing mirror tags, so every release (whether triggered by a wrapper change or by a new `moq.dev/moq-ffi`) just takes the next patch on that line.
 
 The committed `go.mod` carries a `require moq.dev/moq-ffi v0.0.0` **placeholder**. Do not "fix" it or add a `replace`: `just go check` injects a local `replace` to the freshly-generated bindings, and CI rewrites the `require` to the latest published `moq.dev/moq-ffi` at release time. Because Go resolves to the maximum version across the build graph, that `require` is a floor. Consumers always get an ffi at least as new as the wrapper was built against.
 

@@ -12,7 +12,7 @@
 # Usage:
 #
 #     source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
-#     harness_begin smoke "just test smoke"
+#     harness_begin interop "just test interop"
 #     harness_port relay
 #     harness_spawn relay "$HARNESS_RUN/relay.log" "$RELAY" "$HARNESS_RUN/relay.toml"
 #     harness_endpoint relay "http://127.0.0.1:$HARNESS_PORT"
@@ -56,7 +56,7 @@ harness_argv() {
 }
 
 # Print the environment overrides among NAMES that are set, as a requoted prefix
-# for the rerun command: `harness_env SMOKE_PORT SMOKE_PROFILE`. Timing, port,
+# for the rerun command: `harness_env INTEROP_PORT INTEROP_PROFILE`. Timing, port,
 # and profile knobs arrive this way rather than in argv, so a command built from
 # argv alone reruns with the defaults and reproduces a different test.
 #
@@ -105,13 +105,11 @@ harness_begin() {
 # Where port reservations live. Shared across worktrees on purpose: the point is
 # that a run in one worktree cannot hand out a port another already took.
 #
-# The default is suffixed with the user id, like the run root. On Linux TMPDIR is
-# usually unset, so both would land in a world-writable /tmp under a fixed name
-# owned by whoever ran first: a second user's `mkdir` would then fail for every
-# port and the walk would report the whole range taken with nothing reserved. Two
-# worktrees still share, because they run as the same user.
+# Nix shells give TMPDIR a private directory, but their sockets still share the
+# host network. Keep claims in /tmp regardless of each shell's scratch root.
+# The user id avoids ownership conflicts with another user's harnesses.
 harness_port_root() {
-    local root="${MOQ_TEST_PORTS:-${TMPDIR:-/tmp}}"
+    local root="${MOQ_TEST_PORTS:-/tmp}"
     root="${root%/}"
     [[ -n "${MOQ_TEST_PORTS:-}" ]] || root="$root/moq-test-ports-$(id -u)"
     echo "$root"
@@ -130,7 +128,7 @@ harness_valid_port() {
 # Reserve a port for this run, held until it exits, and set HARNESS_PORT.
 #
 # `harness_port <label> [wanted]`. With `wanted` that exact port is taken or the
-# call fails, which is what an explicit SMOKE_PORT/WASM_PORT asks for; without it
+# call fails, which is what an explicit INTEROP_PORT/WASM_PORT asks for; without it
 # the search walks up from MOQ_TEST_PORT_BASE.
 #
 # The answer lands in a variable rather than on stdout because `$(harness_port)`
@@ -146,7 +144,13 @@ harness_port() {
     local label="$1" wanted="${2:-}"
     local root port last status
     root=$(harness_port_root)
-    mkdir -p "$root"
+    # Only the reservation root needs private permissions, not its parents.
+    # shellcheck disable=SC2174
+    mkdir -m 700 -p "$root"
+    if [[ -L "$root" || ! -O "$root" ]]; then
+        echo "error: port reservation root must be owned by this user and not a symlink: $root" >&2
+        return 2
+    fi
 
     if [[ -n "$wanted" ]]; then
         harness_valid_port "$wanted" || {

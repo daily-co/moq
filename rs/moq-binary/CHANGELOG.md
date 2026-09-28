@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.6...moq-binary-v0.1.7) - 2026-09-27
+
+### Added
+
+- *(mux)* detect delay and jitter on JSON and binary tracks ([#4270](https://github.com/moq-dev/moq/pull/4270))
+
+## [0.1.6](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.5...moq-binary-v0.1.6) - 2026-09-26
+
+### Other
+
+- updated the following local packages: kio, moq-net
+
+## [0.1.5](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.4...moq-binary-v0.1.5) - 2026-09-26
+
+### Other
+
+- updated the following local packages: moq-net
+
+## [0.1.4](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.3...moq-binary-v0.1.4) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-net
+
+## [0.1.3](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.2...moq-binary-v0.1.3) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-net
+
+## [0.1.2](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.1...moq-binary-v0.1.2) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-flate, moq-net
+
+## [0.1.1](https://github.com/moq-dev/moq/compare/moq-binary-v0.1.0...moq-binary-v0.1.1) - 2026-09-24
+
+### Other
+
+- fill release doc gaps ([#4027](https://github.com/moq-dev/moq/pull/4027))
+
 ## [0.1.0](https://github.com/moq-dev/moq/releases/tag/moq-binary-v0.1.0) - 2026-09-23
 
 ### Added

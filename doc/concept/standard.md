@@ -26,6 +26,11 @@ maps everything else to "not supported" or a harmless equivalent. The
 [moq-lite page](/concept/moq-lite#what-moq-lite-leaves-out) lists the
 differences.
 
+An IETF publisher declares the track's default priority in `SUBSCRIBE_OK` or
+`PUBLISH` when that draft carries track properties. Groups without a priority
+flag inherit it. If the property is absent, the IETF wire default of 128 maps
+to model priority 127, where higher values are served first.
+
 On drafts 14–19, the Rust publisher serves relative joining `FETCH` requests
 with offset zero for `NextObject` subscriptions. The fetch delivers the saved
 current-group prefix, and the subscription delivers later objects. Standalone,
@@ -36,9 +41,19 @@ because they do not issue joining fetches. Other publishers may replay a cached
 backlog for that filter; selecting the next group instead would leave static
 tracks waiting for a group that never arrives.
 
+A client may present one credential in its `SETUP` with the `AUTHORIZATION
+TOKEN` option. The server reads a value (`USE_VALUE`, or `REGISTER`, which it
+treats as a value since it advertises no token cache) and hands its Token Type
+and bytes to the application unverified; a relay forwards them to its
+[auth server](/bin/relay/auth#the-contract). An alias reference (`DELETE`,
+`USE_ALIAS`) closes the session with `PROTOCOL_VIOLATION`, a structure that
+does not decode with `KEY_VALUE_FORMATTING_ERROR`, and a second token is
+refused.
+
 Several project drafts extend the IETF wire without breaking it, since `SETUP`
 ignores unknown parameters: [cluster](/draft/moq-cluster) routing hop lists,
-[solicit](/draft/moq-solicit) to make announcements opt-in, and
+[solicit](/draft/moq-solicit) to make announcements opt-in,
+[hidden](/draft/moq-hidden) to keep `.`-named namespaces out of discovery, and
 [probe](/draft/moq-probe) for bandwidth estimation.
 [moq-e2ee](/draft/moq-e2ee) is not a transport extension: it encrypts application
 payloads so relays still forward named tracks they cannot read.

@@ -1,8 +1,9 @@
-import { Reader, Writer } from "../stream.ts";
+import { type Cursor, type Reader, Writer } from "../stream.ts";
 import { Timescale, Timestamp } from "../time.ts";
 import { type IetfVersion, Version } from "./version.ts";
 
 const GROUP_END = 0x03;
+const END_OF_TRACK = 0x04;
 
 // MOQ Object Property ids, shared with draft-ietf-moq-loc-04.
 const PROP_TIMESCALE = 0x08n;
@@ -99,32 +100,27 @@ async function encodeObjectExtensions(
 	return result;
 }
 
-async function decodeObjectTime(
-	r: Reader,
-	timescale: Timescale,
-	version: IetfVersion | undefined,
-): Promise<Timestamp | undefined> {
+function decodeObjectTime(c: Cursor, timescale: Timescale): Timestamp | undefined {
 	let timestamp: bigint | undefined;
 	let overrideScale: bigint | undefined;
 	let prevType = 0n;
 	let first = true;
 
-	while (!(await r.done())) {
-		const step = await r.u62();
-		const id = !hasDeltaObjectPropertyTypes(version) || first ? step : prevType + step;
+	while (c.remaining > 0) {
+		const step = c.u62();
+		const id = !hasDeltaObjectPropertyTypes(c.version) || first ? step : prevType + step;
 		first = false;
 		prevType = id;
 
 		if (id % 2n === 0n) {
-			const value = await r.u62();
+			const value = c.u62();
 			if (id === PROP_TIMESTAMP || id === PROP_TIMESTAMP_DRAFT03) {
 				timestamp = value;
 			} else if (id === PROP_TIMESCALE) {
 				overrideScale = value;
 			}
 		} else {
-			const size = await r.u53();
-			await r.read(size);
+			c.read(c.u53());
 		}
 	}
 
@@ -259,14 +255,24 @@ export class Group {
 
 /** A moq-transport object inside a group stream. */
 export class Frame {
-	/** The object payload, or `undefined` for the end of group marker. */
+	/** The object payload, or `undefined` for an end of group or end of track marker. */
 	payload?: Uint8Array;
 	/** The presentation timestamp carried in object properties, when present. */
 	timestamp?: Timestamp;
+	/**
+	 * An END_OF_TRACK marker: no object at or past its location exists. At object 0 its group
+	 * does not exist either, so the track ends at that group; later in a group it ends after it.
+	 */
+	endOfTrack: boolean;
 
-	constructor({ payload, timestamp }: { payload?: Uint8Array; timestamp?: Timestamp } = {}) {
+	constructor({
+		payload,
+		timestamp,
+		endOfTrack = false,
+	}: { payload?: Uint8Array; timestamp?: Timestamp; endOfTrack?: boolean } = {}) {
 		this.payload = payload;
 		this.timestamp = timestamp;
+		this.endOfTrack = endOfTrack;
 	}
 
 	/**
@@ -284,7 +290,10 @@ export class Frame {
 			await w.write(extensions);
 		}
 
-		if (this.payload !== undefined) {
+		if (this.endOfTrack) {
+			await w.u53(0); // length = 0
+			await w.u53(END_OF_TRACK);
+		} else if (this.payload !== undefined) {
 			await w.u53(this.payload.byteLength);
 
 			if (this.payload.byteLength === 0) {
@@ -298,41 +307,40 @@ export class Frame {
 		}
 	}
 
-	/** Decode a frame using the group flags and negotiated IETF version. */
-	static async decode(
-		r: Reader,
-		flags: GroupFlags,
-		timescale: Timescale | undefined,
-		version = r.version,
-	): Promise<Frame> {
+	/** Decode a frame using the group flags, at the cursor's negotiated IETF version. */
+	static decode(c: Cursor, flags: GroupFlags, timescale: Timescale | undefined): Frame {
 		// The first object's delta is its absolute Object ID; every later one is the prior ID
 		// plus the delta plus one. moq-lite groups start at object 0 and never skip one, so
 		// a sequential group is a zero delta throughout, and any other value means the group
 		// either starts partway through or has a gap that would renumber the frames after it.
-		const delta = await r.u53();
+		const delta = c.u53();
 		if (delta !== 0) {
 			throw new Error(`object IDs must start at 0 and increment by 1, got a delta of ${delta}`);
 		}
 
 		let timestamp: Timestamp | undefined;
 		if (flags.hasExtensions) {
-			const extensionsLength = await r.u53();
-			const extensions = await r.read(extensionsLength);
+			const extensionsLength = c.u53();
 			// A track that declared no timescale opted out of timestamps, so its objects
 			// are stamped on arrival even if one carries a Timestamp we cannot interpret.
 			if (timescale !== undefined) {
-				timestamp = await decodeObjectTime(new Reader(undefined, extensions, version), timescale, version);
+				timestamp = c.exact(extensionsLength, (e) => decodeObjectTime(e, timescale));
+			} else {
+				c.read(extensionsLength);
 			}
 		}
 
-		const payloadLength = await r.u53();
+		const payloadLength = c.u53();
 
 		if (payloadLength > 0) {
-			const payload = await r.read(payloadLength);
+			const payload = c.read(payloadLength);
 			return new Frame({ payload, timestamp });
 		}
 
-		const status = await r.u53();
+		const status = c.u53();
+
+		// Defined on every implemented draft, whether or not the header marks the group's end.
+		if (status === END_OF_TRACK) return new Frame({ endOfTrack: true });
 
 		if (flags.hasEnd) {
 			// Empty frame

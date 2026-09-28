@@ -286,6 +286,39 @@ point strictly contains the publisher's. The floor earns its place by being
 correct *immediately*, before the estimator has seen a full flush cycle, which
 is the one thing a measurement cannot be.
 
+## Across renditions
+
+Every track plays from one clock, anchored on the earliest lateness any track
+has shown. The estimator measures each track against its own fastest frame, so a
+constant offset between tracks cancels out of `measured`: a video encoder that
+flushes 200 ms behind the audio encoder produces the same video target as one
+that does not, and its frames would all arrive 200 ms late for the shared clock.
+
+The catalog `delay` field carries that offset: how far a rendition's minimum
+flush lateness trails the broadcast's earliest rendition, measured by the
+publisher and never lowered. It is an addend, not a floor, because nothing on
+this page contains it. The shared playout is the largest requirement among the
+renditions actually subscribed:
+
+```
+playout = max over subscribed renditions of (delay + target)
+```
+
+A receiver **must not** subtract one rendition's `delay` from another's. Each is
+a lifetime maximum taken against a sliding baseline, so two values need not
+share an origin: if the earliest rendition later drifts behind another, their
+difference understates the real spread. The maximum never under-buffers,
+because the subscribed renditions' spread is measured from an earliest baseline
+no earlier than the broadcast's, so it never exceeds the largest `delay` among
+them. The cost is over-buffering by the smallest subscribed `delay` when the
+broadcast's earliest rendition is not subscribed.
+
+The playout is recomputed when a rendition is subscribed, unsubscribed, or its
+catalog entry rises, so dropping a slow rendition lowers latency. The shared
+reference itself only ever moves earlier, so once the earliest subscribed track
+leaves, the clock stays anchored to it until playback re-anchors; that errs on
+the safe side.
+
 ## Rise, fall, startup, and the ceiling
 
 There is **no separate rise or fall limiter**. The histogram is the only
@@ -456,4 +489,4 @@ import outside this directory rather than leaving it to review.
 longer match it, which is what stops a file being edited by hand to make a
 failing implementation pass. It compares rather than rewrites; regenerating is
 the `bun doc/concept/audio-jitter/corpus.ts` command above. It runs in
-`just test` and `just check`.
+`just check`.

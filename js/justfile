@@ -9,7 +9,7 @@ set working-directory := '.'
 # Paths a JS check depends on: every bun workspace (they are not all under js/,
 # see the root package.json) plus the config shared by all of them. `check`,
 # `fix`, and `ci` all skip themselves when a diff misses this.
-scope := '^(js/|doc/|drafts/|demo/(boy|web)/|test/smoke/clients/js|test/wasm/|package\.json$|bun\.lock(b)?$|biome\.jsonc$)'
+scope := '^(js/|doc/|drafts/|demo/(boy|web)/|test/interop/clients/js|test/wasm/|package\.json$|bun\.lock(b)?$|biome\.jsonc$)'
 
 # Run all checks by default.
 default:
@@ -84,7 +84,7 @@ test $FILES="":
     	exit 0
     fi
     bun install --frozen-lockfile
-    bun test common/deps.test.ts common/workers.test.ts
+    bun test common/declarations.test.ts common/deps.test.ts common/workers.test.ts
     if tty -s; then
         bun run --filter='*' --elide-lines=0 test
     else

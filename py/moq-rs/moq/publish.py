@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from moq_ffi import (
@@ -52,12 +53,14 @@ if TYPE_CHECKING:
     from .subscribe import BroadcastConsumer, GroupConsumer, TrackConsumer
 
 
-def _audio_init(format: AudioFormat, init: bytes, label: str | None) -> MoqAudioInit:
-    return MoqAudioInit(format=format, data=init, label=label)
+def _audio_init(format: AudioFormat, init: bytes, label: str | None, track: str | None = None) -> MoqAudioInit:
+    return MoqAudioInit(format=format, data=init, label=label, track=track)
 
 
-def _video_init(format: VideoFormat, init: bytes, label: str | None, hint: VideoHint | None) -> MoqVideoInit:
-    return MoqVideoInit(format=format, data=init, label=label, hint=hint)
+def _video_init(
+    format: VideoFormat, init: bytes, label: str | None, hint: VideoHint | None, track: str | None = None
+) -> MoqVideoInit:
+    return MoqVideoInit(format=format, data=init, label=label, hint=hint, track=track)
 
 
 class MediaProducer:
@@ -91,6 +94,18 @@ class MediaProducer:
     def write_frame(self, payload: bytes, timestamp_us: int = 0) -> None:
         """Write one encoded frame with a presentation timestamp in microseconds."""
         self._inner.write_frame(Frame(payload=payload, timestamp_us=timestamp_us))
+
+    def flush(self, timestamp_us: int) -> None:
+        """Record a local encoder's frame handoff on the broadcast media clock.
+
+        Call this after ``write_frame`` only for encoded live output. File, pipe,
+        and network imports should leave their jitter estimate clock free.
+        """
+        self._inner.flush(timestamp_us)
+
+    def discontinuity(self) -> None:
+        """Mark a timeline break and restart handoff measurement, preserving advertised jitter."""
+        self._inner.discontinuity()
 
     def cut(self) -> None:
         """Draw a group boundary here.
@@ -638,13 +653,13 @@ class BroadcastProducer:
     def announce(self, route: Route | None = None) -> None:
         """Advertise this broadcast's exact path as a route.
 
-        Announcing again re-prices the route in place. The path is already
-        discoverable locally; announce advertises it to peers.
+        Announcing again re-prices the route in place. Until announced, the
+        broadcast is invisible and unroutable for local consumers and peers alike.
         """
         self._inner.announce(route if route is not None else Route())
 
     def unannounce(self) -> None:
-        """Retract this broadcast's exact-path advertisement, if any."""
+        """Retract this broadcast's advertisement, if any, from local consumers and peers alike."""
         self._inner.unannounce()
 
     def set_video_properties(self, properties: VideoProperties) -> None:
@@ -657,11 +672,13 @@ class BroadcastProducer:
         init: bytes,
         *,
         label: str | None = None,
+        track: str | None = None,
     ) -> MediaProducer:
         """Publish one audio codec as a new track. `init` is required: audio resolves its whole
         rendition from those bytes (an OpusHead, an AudioSpecificConfig, a STREAMINFO). `label` is
-        the human-readable rendition name stored in the catalog."""
-        return MediaProducer(self._inner.publish_audio(_audio_init(format, init, label)))
+        the human-readable rendition name stored in the catalog. `track` names the track; otherwise
+        a unique name is derived from the format."""
+        return MediaProducer(self._inner.publish_audio(_audio_init(format, init, label, track)))
 
     def publish_video(
         self,
@@ -670,11 +687,13 @@ class BroadcastProducer:
         *,
         label: str | None = None,
         hint: VideoHint | None = None,
+        track: str | None = None,
     ) -> MediaProducer:
         """Publish one video codec as a new track. `init` may be empty for a format that resolves in
         band. `hint` seeds catalog fields the stream can't reveal (bitrate) or publishes the catalog
-        before the first keyframe. See :class:`VideoHint`."""
-        return MediaProducer(self._inner.publish_video(_video_init(format, init, label, hint)))
+        before the first keyframe. See :class:`VideoHint`. `track` names the track; otherwise a
+        unique name is derived from the format."""
+        return MediaProducer(self._inner.publish_video(_video_init(format, init, label, hint, track)))
 
     def publish_container(
         self,
@@ -714,11 +733,12 @@ class BroadcastProducer:
         *,
         label: str | None = None,
         hint: VideoHint | None = None,
+        track: str | None = None,
     ) -> MediaStreamProducer:
         """Publish a video track fed by a raw byte stream (unknown frame boundaries). Only the
         self-delimiting formats work: `AVC3`, `HEV1`, `AV01`. There is no audio counterpart, since
-        audio has no frame boundaries to infer."""
-        return MediaStreamProducer(self._inner.publish_video_stream(_video_init(format, b"", label, hint)))
+        audio has no frame boundaries to infer. `track` names the track as in :meth:`publish_video`."""
+        return MediaStreamProducer(self._inner.publish_video_stream(_video_init(format, b"", label, hint, track)))
 
     def publish_container_stream(self, format: ContainerFormat) -> ContainerStreamProducer:
         """Publish a container fed by a raw byte stream, which recovers its own framing."""
@@ -777,8 +797,8 @@ class BroadcastProducer:
         ``delta_ratio`` controls how aggressively deltas are emitted instead of full
         snapshots (0 disables deltas); ``None`` uses the binding's default. Set
         ``compression`` to DEFLATE-compress each group; the consumer must pass the same
-        flag. Advertise the track with :meth:`set_catalog_section` if consumers should
-        discover it.
+        flag. The track is advertised in the broadcast's catalog (``json.tracks.<name>``)
+        until it finishes; a name the catalog already carries is refused.
         """
         # Let the record supply delta_ratio's default rather than restating it here.
         config = (
@@ -792,7 +812,9 @@ class BroadcastProducer:
         """Publish a JSON stream track (lossless append-log).
 
         Every appended record is preserved and delivered in order. Set ``compression`` to
-        DEFLATE-compress the group; the consumer must pass the same flag.
+        DEFLATE-compress the group; the consumer must pass the same flag. The track is
+        advertised in the broadcast's catalog (``json.tracks.<name>``) until it finishes; a
+        name the catalog already carries is refused.
         """
         config = MoqJsonStreamConfig(compression=compression)
         return JsonStreamProducer(self._inner.publish_json_stream(name, config))
@@ -822,6 +844,14 @@ class BroadcastProducer:
 
         return BroadcastConsumer(self._inner.consume())
 
+    def close(self) -> None:
+        """End the broadcast for good: retract it and serve no new tracks.
+
+        Tracks already subscribed carry on to their own end. Closing again is a no-op.
+        """
+        self._inner.close()
+
     def finish(self) -> None:
-        """Finish the broadcast, closing its tracks and unpublishing it."""
-        self._inner.finish()
+        """Deprecated: use :meth:`close`. A broadcast end carries no cause."""
+        warnings.warn("use close(); a broadcast end carries no cause", DeprecationWarning, stacklevel=2)
+        self._inner.close()

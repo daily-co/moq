@@ -166,7 +166,7 @@ func TestReconnectAcrossRelayRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer broadcast.Finish()
+	defer broadcast.Close()
 
 	track, err := broadcast.PublishTrack("data", nil)
 	if err != nil {
@@ -249,5 +249,31 @@ func TestReconnectAcrossRelayRestart(t *testing.T) {
 	}
 	if frame == nil {
 		t.Fatal("frame after restart: nil")
+	}
+}
+
+// The WebSocket fallback knobs reach the native client: a QUIC-only dial with
+// no head start still connects, and a negative delay fails Dial instead of
+// wrapping into an enormous one.
+func TestDialWebSocketOptions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), reconnectTimeout)
+	defer cancel()
+
+	r := startRelay(t, ctx, "127.0.0.1:0")
+	defer r.server.Close()
+
+	url := "https://" + r.addr
+	client, err := moq.Dial(ctx, url,
+		moq.WithTLSVerify(false),
+		moq.WithWebSocketEnabled(false),
+		moq.WithWebSocketDelay(0),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+
+	if _, err := moq.Dial(ctx, url, moq.WithWebSocketDelay(-time.Millisecond)); err == nil {
+		t.Fatal("negative websocket delay dialed")
 	}
 }

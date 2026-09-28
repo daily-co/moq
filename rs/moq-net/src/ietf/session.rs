@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-	Control, Message, Publisher, Subscriber, Version, adapter::ControlStreamAdapter, cluster, peer, solicit,
+	Control, Message, Publisher, Subscriber, Version, adapter::ControlStreamAdapter, cluster, hidden, peer, solicit,
 	subscriber::is_protocol_violation,
 };
 
@@ -239,7 +239,7 @@ where
 					Ok(())
 				}));
 
-				kio::wait(|waiter| {
+				let res = kio::wait(|waiter| {
 					use std::task::Poll;
 					if let Poll::Ready(err) = waiter.poll_future(adapter_run.as_mut()) {
 						return Poll::Ready(Err::<(), Error>(err));
@@ -261,7 +261,12 @@ where
 					}
 					Poll::Pending
 				})
-				.await
+				.await;
+				if let Err(err) = &res {
+					// Every track this session was receiving ends with its error.
+					subscriber.abort(err);
+				}
+				res
 			}
 			_ => {
 				// Send SETUP and keep the stream alive: it is also our GOAWAY channel.
@@ -366,7 +371,7 @@ where
 					Ok(())
 				}));
 
-				kio::wait(|waiter| {
+				let res = kio::wait(|waiter| {
 					use std::task::Poll;
 					if let Poll::Ready(err) = waiter.poll_future(unis.as_mut()) {
 						return Poll::Ready(Err::<(), Error>(err));
@@ -391,7 +396,12 @@ where
 					}
 					Poll::Pending
 				})
-				.await
+				.await;
+				if let Err(err) = &res {
+					// Every track this session was receiving ends with its error.
+					subscriber.abort(err);
+				}
+				res
 			}
 		};
 
@@ -424,6 +434,9 @@ pub struct PeerSetup<S: crate::transport::poll::Session> {
 
 	/// The request path the peer advertised, for URL-less transports.
 	pub path: Option<String>,
+
+	/// The credential the peer presented in its `AUTHORIZATION TOKEN` option.
+	pub token: Option<crate::setup::Token>,
 
 	/// The Setup Options it declared (see [`cluster`] and [`solicit`]).
 	pub declared: peer::Peer,
@@ -475,11 +488,13 @@ pub async fn accept_setup<S: crate::transport::poll::Session>(
 			),
 			None => None,
 		};
+		let token = super::token::from_setup(&params, version)?;
 		let declared = peer_from_params(&params, version)?;
 
 		return Ok(PeerSetup {
 			stream: reader,
 			path,
+			token,
 			declared,
 		});
 	}
@@ -498,6 +513,7 @@ fn peer_from_params(params: &ietf::Parameters, version: Version) -> Result<peer:
 	Ok(peer::Peer {
 		cluster: cluster::peer_from_setup(params, version)?,
 		solicit: solicit::from_setup(params, version)?,
+		hidden: hidden::from_setup(params, version),
 	})
 }
 
@@ -529,6 +545,7 @@ async fn run_setup<S: crate::transport::poll::Session>(
 	}
 	cluster::peer_into_setup(&mut parameters, self_origin, cost, version);
 	solicit::into_setup(&mut parameters, version);
+	hidden::into_setup(&mut parameters, version);
 	let parameters = parameters.encode_bytes(version)?;
 
 	writer.encode(&setup::Setup { parameters }).await?;
@@ -988,7 +1005,8 @@ mod tests {
 			version: Version::Draft18,
 			path: None,
 			peer_setup_stream: None,
-			peer_declared: None,
+			// The requests wait on the peer's SETUP (MoQ Hidden).
+			peer_declared: Some(peer::Peer::default()),
 		})
 		.expect("start the session");
 		let _driver = tokio::spawn(driver);

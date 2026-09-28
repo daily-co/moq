@@ -32,7 +32,6 @@ import { AUTO_MAX_AGE, reanchor, ringSamples, target } from "./latency";
 import RenderWorklet from "./render-worklet.ts?worklet";
 import type { Source } from "./source";
 import { type DecodedSpan, Terminal } from "./terminal";
-import { unlockOnGesture } from "./unlock";
 import { Warmup } from "./warmup";
 
 // How long the latency target must hold steady before a floor increase re-anchors. Coalesces a
@@ -156,7 +155,13 @@ export class Decoder {
 		const playout = this.#signals.computed((effect) => {
 			const measured = effect.get(this.#measured);
 			if (measured === undefined) return undefined;
-			return target({ measured, advertised: effect.get(this.source.out.jitter), frame: effect.get(this.#frame) });
+			const delay = effect.get(this.source.out.config)?.delay;
+			return target({
+				measured,
+				advertised: effect.get(this.source.out.jitter),
+				frame: effect.get(this.#frame),
+				delay: delay !== undefined ? Time.Milli(delay) : undefined,
+			});
 		});
 		this.#signals.cleanup(this.sync.register(playout));
 		this.#identity = this.#signals.computed((effect) => {
@@ -218,10 +223,7 @@ export class Decoder {
 			// abandoned, so building against its name would throw. Gate on the race result, not
 			// `context.state`, because `AudioContext.close()` only flips `.state` to "closed" synchronously
 			// on Chrome (Firefox/Safari report "suspended").
-			const loaded = await Promise.race([
-				context.audioWorklet.addModule(RenderWorklet).then(() => true),
-				effect.cancel,
-			]);
+			const loaded = await effect.race(context.audioWorklet.addModule(RenderWorklet).then(() => true));
 			if (!loaded) return;
 
 			// Create the worklet node. outputChannelCount must be set explicitly
@@ -276,8 +278,8 @@ export class Decoder {
 		if (!context) return;
 
 		// The context is built at page load (see #runWorklet), before any user gesture, so it
-		// must be started from a real interaction. See unlockOnGesture.
-		unlockOnGesture(effect, context);
+		// must be started from a real interaction.
+		Util.Gesture.unlock(effect, context);
 
 		// NOTE: You should disconnect/reconnect the worklet to save power when disabled.
 	}
@@ -678,7 +680,12 @@ export class Decoder {
 
 	// Apply ordered container metadata before handling the result. An endpoint that also
 	// starts a new epoch must survive the reset so its following drain is trimmed.
-	#onNext(next: { discontinuity: number; end?: Time.Micro; frame?: { timestamp: Time.Micro } }): boolean {
+	#onNext(next: {
+		discontinuity: number;
+		group: number;
+		end?: Time.Micro;
+		frame?: { timestamp: Time.Micro };
+	}): boolean {
 		if (!this.#terminal.update(next)) return false;
 		this.#ring?.reset();
 		this.sync.reset();

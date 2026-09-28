@@ -55,6 +55,7 @@ final server = await Server.listen(
   ),
 );
 final live = server.createBroadcast('live/camera');
+live.announce(route: MoqRoute()); // unannounced broadcasts are invisible
 await for (final request in server.requests()) {
   final session = await request.accept();
   print(session.epoch());
@@ -62,15 +63,17 @@ await for (final request in server.requests()) {
 ```
 
 The three advertising operations: `moq.createBroadcast(path)` (or
-`origin.createBroadcast`) returns a locally discoverable producer;
+`origin.createBroadcast`) returns an unannounced producer, invisible to everyone;
 `broadcast.announce(route:)` / `broadcast.unannounce()` own that exact-path
-advertisement; `origin.dynamic_(prefix:, route:)` claims `prefix` and
+advertisement, and `broadcast.close()` ends the broadcast for good (a second
+call is a no-op; `finish()` is its deprecated alias); `origin.dynamic_(prefix:, route:)` claims `prefix` and
 every path beneath it (`''` for everything; Dart spells the origin method
 `dynamic_` because `dynamic` is reserved). Hold the returned handle while the
 claim should stay advertised, and reject the requests you will not serve. A
 route is a capability, not an inventory. `announcements(options:)` takes a
 literal prefix plus an optional relative pattern; `announcement.prefix()`
-stays origin-relative and `captures()` reports the wildcard matches.
+stays origin-relative and `captures()` reports the wildcard matches. Paths with
+a `.`-prefixed segment below the prefix are [hidden](/concept/moq-lite#hidden-broadcasts) unless `hidden: true`.
 
 Sessions reconnect with backoff when the transport drops and re-announce local
 broadcasts. `Moq.connect` and `Server.listen` take a `ConnectOptions` /
@@ -78,6 +81,10 @@ broadcasts. `Moq.connect` and `Server.listen` take a `ConnectOptions` /
 and `backoff:` re-paces the retries. `moq.epoch` counts the connections, 1 on the first, pairing with
 `session.status()` to log each reconnect; `maxStreams` raises the peer's
 inbound stream cap for a subscriber to many tracks.
+
+The [WebSocket fallback](/concept/transport#websocket-fallback) races QUIC after
+a 200 ms head start. `websocketEnabled: false` turns it off for a QUIC-only
+relay, and a `websocketDelay` `Duration` changes the head start.
 
 Types are spelled without the `Moq` prefix (`Session`, `BroadcastProducer`,
 `Backoff`); the generated names stay valid, since these are aliases rather than
@@ -100,6 +107,10 @@ Unlike the other bindings, the published Dart binaries carry **no codecs**:
 catalog and container types are there, so already-encoded frames flow through
 `MoqMediaProducer`/`MoqMediaConsumer`, but encoding is up to
 `package:camera`, platform channels, or another codec package.
+
+`MediaProducer.flush(timestampUs: ...)` records the handoff of a locally encoded frame on the broadcast media clock. Call it after `writeFrame` only for live encoder output; file, pipe, and network imports stay clock-free. `MediaProducer` aliases the generated FFI object, so its method is available directly.
+
+Call `media.discontinuity()` when the source seeks, pauses, or changes its time base. It publishes a timeline marker and restarts handoff measurement without lowering advertised jitter. Resume with timestamps that continue forward on the broadcast media clock; this does not permit timestamp rewinds. On a video track, resume with a keyframe: a delta frame before it fails.
 
 ## Connection stats
 

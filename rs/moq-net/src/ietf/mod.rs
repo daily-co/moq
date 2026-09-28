@@ -14,6 +14,7 @@ mod fetch;
 mod filter;
 mod goaway;
 mod group;
+pub mod hidden;
 mod location;
 pub mod message;
 mod namespace;
@@ -29,6 +30,7 @@ pub mod solicit;
 mod subscribe;
 mod subscribe_namespace;
 mod subscriber;
+pub(crate) mod token;
 mod track;
 mod version;
 

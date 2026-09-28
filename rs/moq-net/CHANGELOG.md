@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/moq-dev/moq/compare/moq-net-v0.3.6...moq-net-v0.3.7) - 2026-09-27
+
+### Added
+
+- *(mux)* detect delay and jitter on JSON and binary tracks ([#4270](https://github.com/moq-dev/moq/pull/4270))
+- *(net)* the SETUP AUTHORIZATION TOKEN option reaches the verifier ([#4278](https://github.com/moq-dev/moq/pull/4278))
+
+### Fixed
+
+- *(net)* settle lite-07 tails on stream counts ([#4224](https://github.com/moq-dev/moq/pull/4224))
+- *(net)* announce a covering route to a narrower prefix instead of panicking ([#4302](https://github.com/moq-dev/moq/pull/4302))
+
+### Other
+
+- fix stale agent rules, the moq-net hop range, and the ffi unannounce doc ([#4305](https://github.com/moq-dev/moq/pull/4305))
+
+## [0.3.6](https://github.com/moq-dev/moq/compare/moq-net-v0.3.5...moq-net-v0.3.6) - 2026-09-26
+
+### Added
+
+- end a broadcast with close() in every language ([#4031](https://github.com/moq-dev/moq/pull/4031))
+
+### Fixed
+
+- *(net)* reject undeclared subscription ends ([#4231](https://github.com/moq-dev/moq/pull/4231))
+- *(net)* retain retired counters in host snapshots ([#4238](https://github.com/moq-dev/moq/pull/4238))
+- *(net)* end a track with its session's error when the session dies ([#4120](https://github.com/moq-dev/moq/pull/4120))
+
+### Other
+
+- rename CLAUDE.md to AGENTS.md ([#4235](https://github.com/moq-dev/moq/pull/4235))
+- *(moq-net)* model the dash aggregator's stats load in the session bench ([#4233](https://github.com/moq-dev/moq/pull/4233))
+- *(kio)* keep a parked waiter that quiet lists still hold ([#4240](https://github.com/moq-dev/moq/pull/4240))
+- *(moq-net)* bench lite-06, smoke-run benches nightly, refresh perf quests ([#4229](https://github.com/moq-dev/moq/pull/4229))
+
+## [0.3.5](https://github.com/moq-dev/moq/compare/moq-net-v0.3.4...moq-net-v0.3.5) - 2026-09-26
+
+### Added
+
+- *(net)* count lite-07 group streams in SUBSCRIBE_END ([#4118](https://github.com/moq-dev/moq/pull/4118))
+
+### Fixed
+
+- *(net)* accept EXPIRES in SUBSCRIBE_OK, PUBLISH_OK, and REQUEST_OK ([#4195](https://github.com/moq-dev/moq/pull/4195))
+
+## [0.3.4](https://github.com/moq-dev/moq/compare/moq-net-v0.3.3...moq-net-v0.3.4) - 2026-09-25
+
+### Fixed
+
+- *(net)* skip a stale warm cache on an IETF rejoin ([#4150](https://github.com/moq-dev/moq/pull/4150))
+
+## [0.3.3](https://github.com/moq-dev/moq/compare/moq-net-v0.3.2...moq-net-v0.3.3) - 2026-09-25
+
+### Fixed
+
+- *(net)* end an IETF subscription from its PUBLISH_DONE ([#4083](https://github.com/moq-dev/moq/pull/4083))
+- *(net)* use the registered IETF priority property and TRACK_STATUS/FETCH refusal codes ([#3937](https://github.com/moq-dev/moq/pull/3937))
+
+## [0.3.2](https://github.com/moq-dev/moq/compare/moq-net-v0.3.1...moq-net-v0.3.2) - 2026-09-25
+
+### Added
+
+- *(net)* hide dot-named broadcasts from discovery (moq-lite-07) ([#4060](https://github.com/moq-dev/moq/pull/4060))
+- *(relay)* retag a live session's stats when a re-check moves its tier ([#4057](https://github.com/moq-dev/moq/pull/4057))
+- *(net)* an announce says whether its route entered here or from a peer ([#3972](https://github.com/moq-dev/moq/pull/3972))
+
+### Fixed
+
+- *(net)* keep a lost spliced group lost ([#4077](https://github.com/moq-dev/moq/pull/4077))
+- *(net)* bound the moq-net loom models so the nightly finishes ([#4071](https://github.com/moq-dev/moq/pull/4071))
+- *(net)* a broadcast exists only while announced ([#4021](https://github.com/moq-dev/moq/pull/4021))
+
+### Other
+
+- fold unit tests into `just check`, split CI into `just ci check|test` ([#4078](https://github.com/moq-dev/moq/pull/4078))
+
+## [0.3.1](https://github.com/moq-dev/moq/compare/moq-net-v0.3.0...moq-net-v0.3.1) - 2026-09-24
+
+### Fixed
+
+- *(relay)* keep only finished groups warm when a track goes idle ([#3977](https://github.com/moq-dev/moq/pull/3977))
+- *(net)* don't end in-flight tracks when their broadcast ends ([#4007](https://github.com/moq-dev/moq/pull/4007))
+
+### Other
+
+- rename in-repo smoke test to interop ([#3963](https://github.com/moq-dev/moq/pull/3963))
+
 ## [0.3.0](https://github.com/moq-dev/moq/compare/moq-net-v0.2.22...moq-net-v0.3.0) - 2026-09-23
 
 ### Added
@@ -60,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [**breaking**] `create_track`, `reserve_track`, `unique_track`, `finish`, `create_group`, and `append_group` take `&self`. `track::Consumer::info()` is `query()`. `track::Demand` gains `is_used` / `poll_used` / `poll_unused`. `track::Producer::poll_unused` returns `Poll<Result<()>>`. `bandwidth::Producer::closed()` returns the cause.
 - [**breaking**] `stats::Presence` and `stats::Traffic` name both edges of each cumulative pair `*_started` / `*_ended` (`sessions_started` / `sessions_ended`, `announces_started` / `announces_ended`, `broadcasts_*`, `subscriptions_*`). Serialize still writes the previous `announced` / `*_closed` names beside the new ones; deserialize accepts either spelling, with the canonical name winning.
 - [**breaking**] `origin::Info` is `origin::Config` with public fields and no `with_*` builders. `Producer::info()` is `config()`.
-- [**breaking**] `origin::Config::default()` mints a random hop, `Config::id` is `hop`, and origin handles expose `hop()` instead of dereferencing to `Hop`. Random hops now use the full 62-bit wire range; current `@moq/net` clients decode them as `bigint`, while legacy `@moq/lite` clients limited to `Number.MAX_SAFE_INTEGER` can reject larger values and must upgrade.
+- [**breaking**] `origin::Config::default()` mints a random hop, `Config::id` is `hop`, and origin handles expose `hop()` instead of dereferencing to `Hop`. Random hops stay below 2^53, so legacy `@moq/lite` clients limited to `Number.MAX_SAFE_INTEGER` still decode them; current `@moq/net` clients decode the full 62-bit wire range as `bigint`.
 - [**breaking**] `origin::Producer::scope(root, patterns)` and `origin::Consumer::scope(root, patterns)` replace the separate `with_root` / `scope` calls and return `Result` with `Unauthorized` for an empty grant.
 - [**breaking**] `origin::Pending` is `origin::Requesting`, the consumer-side wait for a request to resolve.
 - `origin::Producer::publish(path, route)` creates and advertises a broadcast together.

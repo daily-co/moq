@@ -30,6 +30,22 @@ func WithVideoLabel(label string) VideoOption {
 	}
 }
 
+// WithAudioTrack names the track instead of deriving a unique name from the
+// format. A requested track already has a name, so the OnTrack variant refuses it.
+func WithAudioTrack(track string) AudioOption {
+	return func(init *ffi.MoqAudioInit) {
+		init.Track = &track
+	}
+}
+
+// WithVideoTrack names the track instead of deriving a unique name from the
+// format. A requested track already has a name, so the OnTrack variant refuses it.
+func WithVideoTrack(track string) VideoOption {
+	return func(init *ffi.MoqVideoInit) {
+		init.Track = &track
+	}
+}
+
 // WithVideoHint seeds catalog fields that a video stream cannot reveal itself.
 func WithVideoHint(hint VideoHint) VideoOption {
 	return func(init *ffi.MoqVideoInit) {
@@ -82,13 +98,14 @@ func (b *BroadcastProducer) Dynamic() (*BroadcastDynamic, error) {
 
 // Announce advertises this broadcast's exact path as a route.
 //
-// Announcing again re-prices the route in place. The path is already
-// discoverable locally; Announce advertises it to peers.
+// Announcing again re-prices the route in place. Until announced, the
+// broadcast is invisible and unroutable for local consumers and peers alike.
 func (b *BroadcastProducer) Announce(route Route) error {
 	return b.inner.Announce(route)
 }
 
-// Unannounce withdraws peer advertising while preserving local discovery.
+// Unannounce retracts this broadcast's exact-path advertisement, if any, from
+// local consumers and peers alike. Tracks already in flight carry on.
 func (b *BroadcastProducer) Unannounce() error {
 	return b.inner.Unannounce()
 }
@@ -245,9 +262,17 @@ func (b *BroadcastProducer) RemoveCatalogSection(name string) error {
 	return b.inner.RemoveCatalogSection(name)
 }
 
-// Finish closes the broadcast.
+// Close ends the broadcast for good: it retracts and serves no new tracks.
+// Tracks already subscribed carry on to their own end. Closing again is a no-op.
+func (b *BroadcastProducer) Close() error {
+	return b.inner.Close()
+}
+
+// Finish ends the broadcast.
+//
+// Deprecated: use [BroadcastProducer.Close]; a broadcast end carries no cause.
 func (b *BroadcastProducer) Finish() error {
-	return b.inner.Finish()
+	return b.inner.Close()
 }
 
 // BroadcastDynamic is a stream of subscriber-requested tracks.
@@ -340,6 +365,17 @@ func (m *MediaProducer) Unused(ctx context.Context) error {
 // the bitstream, so a Frame carries only the payload and its timestamp.
 func (m *MediaProducer) WriteFrame(frame Frame) error {
 	return m.inner.WriteFrame(frame)
+}
+
+// Flush records a local encoder's frame handoff on the broadcast media clock.
+// Call after WriteFrame only for local encoder output, not file or network imports.
+func (m *MediaProducer) Flush(timestampUs uint64) error {
+	return m.inner.Flush(timestampUs)
+}
+
+// Discontinuity marks a timeline break and restarts handoff measurement, preserving advertised jitter.
+func (m *MediaProducer) Discontinuity() error {
+	return m.inner.Discontinuity()
 }
 
 // Cut draws a group boundary here.

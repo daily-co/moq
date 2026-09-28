@@ -4,6 +4,7 @@
  * @module
  */
 import { type GetPromise, Once, Signal } from "@moq/signals";
+import { NotFound } from "./error.ts";
 import type { Consumer as GroupConsumer } from "./group.ts";
 import { Route } from "./hop.ts";
 import { hooks, type TrackSequence } from "./internal.ts";
@@ -14,7 +15,7 @@ import { registerWire, trackOf, type Broadcast as Wire } from "./wire.ts";
 export interface Announcer {
 	/** Advertise or re-price this broadcast's path. */
 	announce(route: Route): void;
-	/** Retract the advertisement, leaving the broadcast reachable by exact path. */
+	/** Retract the advertisement from local consumers and peers alike. */
 	unannounce(): void;
 }
 
@@ -131,7 +132,7 @@ async function fetchGroup(
 	try {
 		for (;;) {
 			const group = await subscriber.recvGroup();
-			if (!group) throw new Error(`group not found: ${sequence}`);
+			if (!group) throw new NotFound(`group ${sequence}`);
 			if (group.sequence === sequence) {
 				// Close the subscription when the returned group finishes, not now: an
 				// in-progress group must keep receiving frames for its lifetime (mirrors
@@ -141,7 +142,7 @@ async function fetchGroup(
 			}
 
 			group.close();
-			if (group.sequence > sequence) throw new Error(`group not found: ${sequence}`);
+			if (group.sequence > sequence) throw new NotFound(`group ${sequence}`);
 		}
 	} catch (err) {
 		subscriber.close();
@@ -244,8 +245,8 @@ export class Producer {
 	/**
 	 * Advertise this broadcast's exact path, or re-price a standing advertisement in place.
 	 *
-	 * Call it once the tracks a subscriber needs first (a catalog) exist. The broadcast is
-	 * discoverable on the local origin from creation; announcing advertises it to peers. Retracts on
+	 * Call it once the tracks a subscriber needs first (a catalog) exist. Until then the
+	 * broadcast exists for nobody, on its own origin or at a peer. Retracts on
 	 * {@link unannounce} or {@link close}. Throws if this producer was not created through an
 	 * origin, or if the broadcast is already closed.
 	 */
@@ -257,12 +258,18 @@ export class Producer {
 		this.#announcer.announce(Route.normalize(route));
 	}
 
-	/** Retract the advertisement of this broadcast's path, if any. */
+	/**
+	 * Retract the advertisement of this broadcast's path, if any, from local consumers and
+	 * peers alike. {@link announce} brings it back.
+	 */
 	unannounce(): void {
 		this.#announcer?.unannounce();
 	}
 
-	/** Close the broadcast, optionally with an error to abort waiters. Idempotent. */
+	/** End the broadcast for good: retract it, serve no new tracks, and refuse a later {@link announce}. Idempotent. */
+	close(): void;
+	/** @deprecated A broadcast end carries no cause; call `close()` without one. */
+	close(abort?: Error): void;
 	close(abort?: Error) {
 		this.#announcer?.unannounce();
 		this.#announcer = undefined;
@@ -352,9 +359,12 @@ export class Consumer {
 	}
 
 	/**
-	 * Release this handle. The broadcast is closed (optionally with an error to abort waiters)
-	 * once this was the last live handle; while other {@link clone}s remain open it stays live.
+	 * Release this handle. The broadcast is closed once this was the last live handle;
+	 * while other {@link clone}s remain open it stays live.
 	 */
+	close(): void;
+	/** @deprecated A broadcast end carries no cause; call `close()` without one. */
+	close(abort?: Error): void;
 	close(abort?: Error) {
 		if (this.#closed) return;
 		this.#closed = true;

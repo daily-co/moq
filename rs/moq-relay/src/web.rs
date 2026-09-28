@@ -227,8 +227,8 @@ impl Web {
 		}
 	}
 
-	/// Bind configured web sockets now, so an embedder can read ephemeral ports.
-	pub(crate) fn bind(mut self) -> anyhow::Result<Self> {
+	/// Bind the configured listeners now, so [`addrs`](Self::addrs) reports ephemeral ports before serving.
+	pub fn bind(mut self) -> anyhow::Result<Self> {
 		if self.https_tls.is_none() && self.config.https.listen.is_some() {
 			let tls = build_https_config(&self.config.https.cert, &self.config.https.key, &self.config.https.root)?;
 			self.https_tls = Some(RustlsConfig::from_config(tls));
@@ -254,7 +254,7 @@ impl Web {
 		Ok(self)
 	}
 
-	/// The actual bound addresses after [`crate::Relay::load`].
+	/// The actual bound addresses after [`bind`](Self::bind) or [`crate::Relay::load`].
 	pub fn addrs(&self) -> Addrs {
 		self.addrs
 	}
@@ -920,31 +920,16 @@ async fn serve_fetch(
 		// freshly-connected subscribers don't get a spurious 404 before gossip arrives.
 		let consumer = origin.consume();
 		let broadcast = consumer.routed_broadcast("").await.map_err(|_| StatusCode::NOT_FOUND)?;
-		let group = match params.group {
-			// "latest" needs a live subscription to learn the newest sequence, since a
-			// fetch can only retrieve a sequence you already know. Once it's known, fetch
-			// it rather than reading it off the subscription, so an evicted latest is
-			// re-retrieved from upstream instead of waited on forever.
-			FetchGroup::Latest => {
-				async {
-					let consumer = broadcast.track(&track)?;
-					let mut sub = consumer.subscribe(None).await?;
-					match sub.latest() {
-						Some(sequence) => consumer.fetch_group(sequence, None).await.map(Some),
-						None => sub.recv_group().await,
-					}
-				}
-				.await
-			}
-			// A one-shot fetch, no subscription required.
-			FetchGroup::Num(sequence) => async { broadcast.track(&track)?.fetch_group(sequence, None).await }
-				.await
-				.map(Some),
+		let sequence = match params.group {
+			FetchGroup::Num(sequence) => Some(sequence),
+			FetchGroup::Latest => None,
 		};
-
-		let group = match group {
-			Ok(Some(group)) => group,
-			Ok(None) | Err(moq_net::Error::NotFound) => return Err(StatusCode::NOT_FOUND),
+		let group = match async { crate::fetch_group(&broadcast.track(&track)?, sequence).await }.await {
+			Ok(group) => group,
+			// A miss upstream arrives as the stream reset that refused the FETCH.
+			Err(moq_net::Error::NotFound | moq_net::Error::Stream(moq_net::StreamError::NotFound)) => {
+				return Err(StatusCode::NOT_FOUND);
+			}
 			Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
 		};
 
@@ -1301,30 +1286,6 @@ mod tests {
 		}
 	}
 
-	/// Two ports the kernel just handed out, released together so neither bind can
-	/// be handed the other's.
-	#[cfg(all(unix, feature = "websocket"))]
-	fn free_ports() -> (u16, u16) {
-		let http = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-		let https = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-		(http.local_addr().unwrap().port(), https.local_addr().unwrap().port())
-	}
-
-	/// Connect to `port`, waiting for [`Web::serve`] to finish binding.
-	#[cfg(all(unix, feature = "websocket"))]
-	async fn connect(port: u16) -> tokio::net::TcpStream {
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		loop {
-			match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
-				Ok(stream) => return stream,
-				Err(err) if std::time::Instant::now() >= deadline => {
-					panic!("web listener never came up on port {port}: {err}")
-				}
-				Err(_) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
-			}
-		}
-	}
-
 	/// `GET /socket` over `io`, returning the body the handler produced.
 	///
 	/// Hand-rolled rather than reached through an HTTP client so the same request
@@ -1380,11 +1341,9 @@ mod tests {
 	async fn serve_captures_the_socket_on_every_listener() {
 		let dir = TempDir::new().unwrap();
 		let (ca, cert, key) = make_certs(&dir);
-		let (http, https) = free_ports();
-
 		let mut config = Config::default();
-		config.http.listen = Some(format!("127.0.0.1:{http}").parse().unwrap());
-		config.https.listen = Some(format!("127.0.0.1:{https}").parse().unwrap());
+		config.http.listen = Some("127.0.0.1:0".parse().unwrap());
+		config.https.listen = Some("127.0.0.1:0".parse().unwrap());
 		config.https.cert = vec![cert.clone()];
 		config.https.key = vec![key];
 
@@ -1398,16 +1357,23 @@ mod tests {
 		let cluster = cluster::Cluster::new(crate::cluster::Options::default()).unwrap();
 		let certificates = moq_tokio::tls::Certificates::from_pem(&std::fs::read(&cert).unwrap()).unwrap();
 
-		let web = Web::new(auth, cluster, certificates, config);
+		let web = Web::new(auth, cluster, certificates, config).bind().unwrap();
+		let Addrs {
+			http: Some(http),
+			https: Some(https),
+		} = web.addrs()
+		else {
+			panic!("both listeners are configured");
+		};
 		let serving = tokio::spawn(web.serve(Router::new().route("/socket", get(report_socket))));
 
 		assert_eq!(
-			get_socket(connect(http).await).await,
+			get_socket(tokio::net::TcpStream::connect(http).await.unwrap()).await,
 			"captured",
 			"the HTTP listener must install the capturing acceptor"
 		);
 
-		let tcp = connect(https).await;
+		let tcp = tokio::net::TcpStream::connect(https).await.unwrap();
 		let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
 		let tls = tls_connector(&ca).connect(name, tcp).await.expect("TLS handshake");
 		assert_eq!(

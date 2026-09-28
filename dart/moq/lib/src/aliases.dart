@@ -43,7 +43,7 @@ typedef BroadcastRequest = MoqBroadcastRequest;
 /// A stream of route announcements and retractions under a prefix.
 typedef AnnounceConsumer = MoqAnnounceConsumer;
 
-/// A literal prefix plus an optional relative pattern for announcement discovery.
+/// A literal prefix, an optional relative pattern, and the hidden-path opt-in for announcement discovery.
 typedef AnnounceConfig = MoqAnnounceConfig;
 
 /// A pending wait for a route to cover a specific path.
@@ -85,7 +85,7 @@ typedef GroupProducer = MoqGroupProducer;
 /// The read side of a single group: yields timestamped raw frames.
 typedef GroupConsumer = MoqGroupConsumer;
 
-/// The write side of a media track fed pre-framed payloads.
+/// The write side of a media track; discontinuity() marks a break between pre-framed payloads.
 typedef MediaProducer = MoqMediaProducer;
 
 /// The write side of a media track fed a raw byte stream, with frame boundaries inferred.

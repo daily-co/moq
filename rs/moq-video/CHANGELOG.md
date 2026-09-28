@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/moq-dev/moq/compare/moq-video-v0.1.6...moq-video-v0.1.7) - 2026-09-27
+
+### Fixed
+
+- *(video)* keep the CUDA context alive until the NVDEC decoder is destroyed ([#4290](https://github.com/moq-dev/moq/pull/4290))
+
+## [0.1.6](https://github.com/moq-dev/moq/compare/moq-video-v0.1.5...moq-video-v0.1.6) - 2026-09-26
+
+### Added
+
+- *(moq-mux)* catalog delay measures cross-rendition encoder lateness ([#4170](https://github.com/moq-dev/moq/pull/4170))
+
+### Other
+
+- rename CLAUDE.md to AGENTS.md ([#4235](https://github.com/moq-dev/moq/pull/4235))
+
+## [0.1.5](https://github.com/moq-dev/moq/compare/moq-video-v0.1.4...moq-video-v0.1.5) - 2026-09-26
+
+### Fixed
+
+- *(nvenc)* commit rate changes and cleanup only once the driver accepts ([#4146](https://github.com/moq-dev/moq/pull/4146))
+
+## [0.1.4](https://github.com/moq-dev/moq/compare/moq-video-v0.1.3...moq-video-v0.1.4) - 2026-09-25
+
+### Other
+
+- *(capture)* drive native capture through clock edge cases in CI ([#4125](https://github.com/moq-dev/moq/pull/4125))
+
+## [0.1.3](https://github.com/moq-dev/moq/compare/moq-video-v0.1.2...moq-video-v0.1.3) - 2026-09-25
+
+### Added
+
+- *(mux)* measure encoder flush jitter per rendition ([#3940](https://github.com/moq-dev/moq/pull/3940))
+
+## [0.1.2](https://github.com/moq-dev/moq/compare/moq-video-v0.1.1...moq-video-v0.1.2) - 2026-09-25
+
+### Other
+
+- updated the following local packages: moq-net, moq-mux, hang
+
+## [0.1.1](https://github.com/moq-dev/moq/compare/moq-video-v0.1.0...moq-video-v0.1.1) - 2026-09-24
+
+### Added
+
+- *(moq-video)* one VAAPI render node for encode, decode and resize ([#4023](https://github.com/moq-dev/moq/pull/4023))
+
+## [0.0.27](https://github.com/moq-dev/moq/compare/moq-video-v0.0.26...moq-video-v0.0.27) - 2026-09-23
+
+### Fixed
+
+- *(ci)* repair nightly builds hidden behind the first failure ([#3956](https://github.com/moq-dev/moq/pull/3956))
+
 ## [0.0.26](https://github.com/moq-dev/moq/compare/moq-video-v0.0.25...moq-video-v0.0.26) - 2026-09-23
 
 ### Added
