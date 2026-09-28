@@ -38,10 +38,22 @@ Decisions:
 - HLS and DASH segments are derived at the edge from group timestamps, not
   from storage objects. Fetching extra objects is fine when they land in the
   reader's cache for the next request.
+- HLS `EXT-X-TARGETDURATION` is fixed for the run, not the observed maximum
+  #4280 shipped. This reverses that PR's decision 4 (09-28 merged-PR audit).
+
+For triage, not blocking: two Codex P2s arrived after #4280 merged and are
+unanswered. A timeline record whose `sequence` differs from its window index
+is passed through unvalidated
+([review](https://github.com/moq-dev/moq/pull/4280#pullrequestreview-5332725290)),
+and `Timelines::track` re-enrolling a name while its old `Recorder` is alive
+leaves two handles on one segmenter
+([r4117516035](https://github.com/moq-dev/moq/pull/4280#discussion_r4117516035)).
 
 ## Quests
 
 - [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - `@moq/hang` publishes and reads the same per-track timelines as Rust
+- [Fixed HLS target duration](/quest/m1/archive/track-timeline/hls-target.md) - one `EXT-X-TARGETDURATION` for the run, and no segment longer than it
+- [HLS timeline resubscribe](/quest/m1/archive/track-timeline/hls-resubscribe.md) - a transient timeline error re-subscribes instead of turning a rendition's segments into gaps
 
 ## Related
 
