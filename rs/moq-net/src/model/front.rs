@@ -222,6 +222,8 @@ pub(super) struct Front {
 	serving_closing: bool,
 	/// The route an upstream request is in flight through.
 	upstream: Option<u64>,
+	/// Routes excluded from selection: their source ended while still advertised.
+	excluded: HashSet<u64>,
 	/// Why the last candidate fell through, reported if the front ends unresolved.
 	last_err: Option<Error>,
 	/// Whether the parked requesters were resolved (the first source attached).
@@ -248,6 +250,7 @@ impl Front {
 			serving: None,
 			serving_closing: false,
 			upstream: None,
+			excluded: HashSet::new(),
 			last_err: None,
 			resolved: false,
 			tracks: BTreeMap::new(),
@@ -276,6 +279,16 @@ impl Front {
 	/// [`Identity::origin`].
 	pub(super) fn origin(&self) -> Option<Hop> {
 		self.identity.origin()
+	}
+
+	/// The routes excluded from selection; the driver skips them.
+	pub(super) fn excluded_routes(&self) -> &HashSet<u64> {
+		&self.excluded
+	}
+
+	/// Forget excluded routes that left the table (a reconnect is a fresh entry).
+	pub(super) fn retain_routes(&mut self, standing: impl Fn(u64) -> bool) {
+		self.excluded.retain(|route| standing(*route));
 	}
 
 	/// The origin whose copies may deliver content, once replies established one.
@@ -456,12 +469,16 @@ impl Front {
 	}
 
 	fn source_closed(&mut self, source: u64, actions: &mut Vec<Action>) {
-		let Some((serving, _)) = self.serving else {
+		let Some((serving, route)) = self.serving else {
 			return;
 		};
 		if serving != source {
 			return;
 		}
+		// A standing route can outlive the source it produced. Asking it again
+		// would re-request the broadcast that just ended; another route to the
+		// same publisher may still resume it.
+		self.excluded.insert(route);
 		self.serving = None;
 		self.serving_closing = false;
 		actions.push(Action::Detach { source });
@@ -1112,6 +1129,7 @@ mod tests {
 			front.step(Event::SourceClosed { source: 100 }),
 			&[Action::Detach { source: 100 }, Action::Reselect],
 		);
+		assert!(front.excluded_routes().contains(&1));
 		assert_actions(
 			front.step(Event::Selected {
 				best: Some(remote(3, 10)),

@@ -31,7 +31,7 @@ with nothing delivered from the candidate. Things to watch:
 
 ## Related
 
-- [Wildcard](/quest/m1/wildcard/README.md) - the reply-named identity landed
+- [Wildcard](/quest/m0/wildcard/README.md) - the reply-named identity landed
   there
 - [Cluster origin reply](/quest/m1/cluster-origin.md) - the same identity on
   moq-transport
