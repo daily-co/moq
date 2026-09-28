@@ -29,9 +29,10 @@ when a transmit poll sends nothing. In moq-dev/noq
 
 Transport-boundary tests through the real callbacks: a partial poll that
 drains, a sender blocked only by `send_window`, and a stream blocked by
-receiver credit. Builds on the released BBR fixes (noq 1.3.1). No public
-API or wire change is intended.
+receiver credit. Builds on the seven fixes released in moq-noq 1.3.1. No public API or wire
+change is intended.
 
 ## Related
 
-- [BBR3 app-limited](/quest/m2/quic-bbr-app-limited.md) - measures natural draining on the corrected controller
+- [BBR idle burst](/quest/m1/quic/bbr-app-limited.md) - the first app-limited fix this extends
+- [Natural media drains](/quest/m2/quic-bbr-natural-drain.md) - measures natural draining on the corrected controller

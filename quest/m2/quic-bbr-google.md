@@ -36,5 +36,5 @@ expanding this study into a controller rewrite.
 
 ## Related
 
-- [BBR3 app-limited](/quest/m2/quic-bbr-app-limited.md) - reuse media profiles and measurements
+- [Natural media drains](/quest/m2/quic-bbr-natural-drain.md) - reuse media profiles and measurements
 - [Upstream the fork](/quest/m1/quic/upstream.md) - share useful findings with upstream
