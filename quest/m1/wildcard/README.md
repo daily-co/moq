@@ -171,7 +171,9 @@ A prefix claim needs the variable part of a path trailing, so a fleet-wide
 service claims its own prefix and mirrors the source path beneath it
 (`.transcode/<pid>/foo.hang`) rather than publishing beneath the source. The
 source's catalog reaches the contribution through a
-cross-broadcast reference. The platform layout, grants, and metering are
+cross-broadcast reference. The `.` keeps the claim out of default listings, so
+the player's covering check opts into hidden routes; that relies on the relay
+and the token's scope exposing them. The platform layout, grants, and metering are
 the deployment's; moq.pro's is in its
 [wildcard questline](https://github.com/moq-dev/moq.pro/blob/main/quest/m2/wildcard/README.md).
 
