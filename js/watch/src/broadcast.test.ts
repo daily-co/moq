@@ -350,8 +350,8 @@ describe("cross-broadcast renditions", () => {
 // is hidden, as a deployment keeps it out of listings, so the claim is only seen by opting in.
 describe("wildcard renditions", () => {
 	const name = Path.from("live/foo.hang");
-	const derived = Path.from(".transcode/foo.hang");
-	const rel = Path.normalizeRelative("../.transcode/foo.hang");
+	const derived = Path.from(".pro/transcode/foo.hang");
+	const rel = Path.normalizeRelative("../.pro/transcode/foo.hang");
 
 	const watch = (owner: Origin.Producer) =>
 		new Broadcast({
@@ -379,7 +379,7 @@ describe("wildcard renditions", () => {
 			await settle();
 			expect(videoRenditions(source)).toEqual(["source"]);
 
-			const worker = owner.dynamic(Path.from(".transcode"));
+			const worker = owner.dynamic(Path.from(".pro/transcode"));
 			const requests = worker.requested();
 			await settle();
 			expect(videoRenditions(source)).toEqual(["source", "transcode"]);
@@ -427,7 +427,7 @@ describe("wildcard renditions", () => {
 		try {
 			// A catch-all (an archive) and a narrower pool both cover the derived path.
 			const archive = owner.dynamic(Path.empty());
-			const worker = owner.dynamic(Path.from(".transcode"));
+			const worker = owner.dynamic(Path.from(".pro/transcode"));
 			await settle();
 			expect(videoRenditions(source)).toEqual(["source", "transcode"]);
 
