@@ -2837,7 +2837,7 @@ impl<S: crate::transport::poll::Session> SubStream<S> {
 
 enum Sub<S: crate::transport::poll::Session> {
 	None,
-	Active(SubStream<S>),
+	Active(Box<SubStream<S>>),
 }
 
 /// Every advertisement the peer currently has live on one announce stream.
@@ -3211,7 +3211,7 @@ impl<S: crate::transport::poll::Session> TrackServe<S> {
 		let id = est.id;
 		match kio::wait(move |waiter| est.poll(waiter)).await {
 			Ok(active) => {
-				*sub = Sub::Active(active);
+				*sub = Sub::Active(Box::new(active));
 				Ok(())
 			}
 			Err(err) => {
@@ -3237,7 +3237,7 @@ impl<S: crate::transport::poll::Session> TrackServe<S> {
 				let mut est = Box::new(est);
 				let id = est.id;
 				match kio::wait(move |waiter| est.poll(waiter)).await {
-					Ok(active) => *sub = Sub::Active(active),
+					Ok(active) => *sub = Sub::Active(Box::new(active)),
 					Err(err) => {
 						self.subscriber.remove_subscribe(id);
 						return Err(err);
@@ -3655,7 +3655,7 @@ impl<S: crate::transport::poll::Session> ServeLoop<S> {
 					let id = est.id;
 					self.mode = ServeMode::Select;
 					match res {
-						Ok(active) => self.sub = Sub::Active(active),
+						Ok(active) => self.sub = Sub::Active(Box::new(active)),
 						Err(err) => {
 							// Opening the upstream failed (usually the session dying): hand
 							// the track back for another route to resume.
