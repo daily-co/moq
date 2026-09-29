@@ -38,6 +38,14 @@ Decisions:
 - HLS and DASH segments are derived at the edge from group timestamps, not
   from storage objects. Fetching extra objects is fine when they land in the
   reader's cache for the next request.
+- `moq-hls` never retries a failed timeline, because the origin already reconnects
+  transient source failures. A replacement publisher that restarts group
+  numbering is a publisher bug: a broadcast, track, or group name always means
+  the same content, and MoQ has no ETag-style invalidation
+  ([#4556](https://github.com/moq-dev/moq/pull/4556)). A failed timeline
+  fails loud instead: the reference ends every playlist with `EXT-X-ENDLIST`,
+  and another rendition's playlist ends at its last covered segment rather than
+  listing gaps.
 - HLS `EXT-X-TARGETDURATION` is fixed for the run, not the observed maximum
   #4280 shipped. This reverses that PR's decision 4 (09-28 merged-PR audit).
 

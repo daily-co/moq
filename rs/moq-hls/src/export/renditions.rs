@@ -296,7 +296,7 @@ impl Fanout {
 		});
 	}
 
-	/// Mark every living rendition's window ended (the timeline finished cleanly).
+	/// Mark every living rendition's window ended (the timeline finished or failed).
 	pub fn end_windows(&self) {
 		let mut feed = self.feed.lock().unwrap();
 		feed.ended = true;

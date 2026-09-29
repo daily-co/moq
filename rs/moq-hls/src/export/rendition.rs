@@ -467,7 +467,7 @@ impl Rendition {
 		self.run().generation
 	}
 
-	/// Mark this rendition's window ended (the timeline finished cleanly).
+	/// Mark this rendition's window ended (the timeline finished or failed).
 	pub(crate) fn end(&self) {
 		self.live.end();
 	}
@@ -575,23 +575,31 @@ impl Rendition {
 				}
 			})
 			.collect();
+		// A failed timeline ends this playlist at its last resolvable segment.
+		let failed = window.segments.last().is_some_and(|row| self.is_failed(row));
 
 		Snapshot {
 			target_duration,
 			media_sequence: window.sequence,
 			segments,
-			finished: window.ended,
+			finished: window.ended || failed,
 			program_date_time,
 			generation,
 		}
 	}
 
-	/// `rows` with what each holds, up to the first one this rendition cannot resolve yet: a
-	/// segment is listed only once its content is final.
+	/// `rows` with what each holds, up to the first one this rendition cannot resolve yet (or
+	/// ever, once its timeline failed): a segment is listed only once its content is final.
 	fn resolved<'a>(&'a self, rows: &'a [segments::Row]) -> impl Iterator<Item = (&'a segments::Row, Content)> {
 		rows.iter()
 			.map(|row| (row, self.resolve(row)))
-			.take_while(|(_, content)| *content != Content::Pending)
+			.take_while(|(_, content)| !matches!(content, Content::Pending | Content::Failed))
+	}
+
+	/// Whether this rendition's timeline failed before reaching `row`'s end, so neither it nor
+	/// any later row will resolve.
+	pub(crate) fn is_failed(&self, row: &segments::Row) -> bool {
+		self.resolve(row) == Content::Failed
 	}
 
 	/// Whether the playlist has anything to serve yet (at least one segment, or the broadcast
@@ -884,7 +892,7 @@ async fn watch_spans(
 	window: Option<Duration>,
 ) {
 	let result: Result<()> = async {
-		let mut timeline = super::timeline::Follower::subscribe(&broadcast, &section, &track).await?;
+		let mut timeline = moq_mux::timeline::Consumer::<()>::subscribe(&broadcast, &section, &track).await?;
 		while let Some(event) = timeline.next().await? {
 			match event {
 				moq_mux::timeline::Event::Push { entry, .. } => spans.push(entry, window),
@@ -896,10 +904,15 @@ async fn watch_spans(
 		Ok(())
 	}
 	.await;
-	if let Err(err) = result {
-		tracing::error!(%track, %err, "rendition timeline failed; its remaining segments are gaps");
+	match result {
+		Ok(()) => spans.end(),
+		// Never retried (the origin already rides out transient source failures), and not
+		// papered over with gaps: the rendition's playlist ends at its last record.
+		Err(err) => {
+			tracing::error!(%track, %err, "rendition timeline failed; ending its playlist");
+			spans.fail();
+		}
 	}
-	spans.end();
 }
 
 impl Drop for Rendition {
