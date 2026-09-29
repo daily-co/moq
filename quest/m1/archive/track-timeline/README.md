@@ -53,7 +53,7 @@ leaves two handles on one segmenter
 
 - [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - `@moq/hang` publishes and reads the same per-track timelines as Rust
 - [Fixed HLS target duration](/quest/m1/archive/track-timeline/hls-target.md) - one `EXT-X-TARGETDURATION` for the run, and no segment whose rounded `EXTINF` exceeds it
-- [HLS timeline resubscribe](/quest/m1/archive/track-timeline/hls-resubscribe.md) - a transient timeline error re-subscribes instead of turning a rendition's segments into gaps
+- [HLS timeline resubscribe](/quest/m1/archive/track-timeline/hls-resubscribe.md) - a transient timeline error re-subscribes instead of freezing the playlists or turning a rendition's segments into gaps
 
 ## Related
 

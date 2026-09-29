@@ -1,9 +1,9 @@
-# [S] HLS timeline resubscribe
+# [M] HLS timeline resubscribe
 
 ## Goal
 
-A transient error on a rendition's timeline subscription does not turn that
-rendition's remaining segments into `EXT-X-GAP`. The watcher subscribes again
+A transient error on a timeline subscription does not freeze the playlists
+or turn a rendition's remaining segments into `EXT-X-GAP`. The watcher subscribes again
 and keeps resolving segments. Only a clean end, a malformed timeline, or the
 track or broadcast going away ends its spans.
 
@@ -17,6 +17,11 @@ flagged it as a P1
 The agent declined it because the watcher never retries, and named
 re-subscribing as the real fix. The maintainer's decision in the 09-28
 merged-PR audit is to do that re-subscribe.
+
+The reference rendition has the same flaw on a separate path, and a worse
+one: `watch_timeline` in `rs/moq-hls/src/export/mod.rs` warns on the error,
+then closes every window, so all playlists freeze and every recording cursor
+ends. It follows the same rules below.
 
 - Re-subscribe only on a recoverable error (a transport reset, a lost
   session, the publisher's track aborting) while the broadcast is still live,
@@ -35,8 +40,9 @@ merged-PR audit is to do that re-subscribe.
   re-subscribe is either served, refused, or cut short by the broadcast
   ending.
 
-Add a regression test where a non-reference rendition's timeline errors and
-comes back, and its later segments resolve to media, not gaps.
+Add regression tests where a non-reference rendition's timeline errors and
+comes back, and its later segments resolve to media, not gaps; and where the
+reference timeline does the same, and every playlist keeps advancing.
 
 ## Related
 
