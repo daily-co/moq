@@ -172,7 +172,8 @@ impl<'a> Decoder<'a> {
 	}
 
 	/// Read a varint.
-	#[inline]
+	#[cfg_attr(target_arch = "wasm32", inline)]
+	#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 	pub fn varint(&mut self) -> Result<u64, DecodeError> {
 		let (value, rest) = varint::read(self.buf, self.form)?;
 		self.buf = rest;

@@ -96,7 +96,8 @@ pub(crate) fn size(value: u64, form: Form) -> Result<usize, BoundsExceeded> {
 /// Append the minimal encoding of `value` in `form`.
 ///
 /// Fails past [`MAX_QUIC`] in the QUIC form, writing nothing.
-#[inline]
+#[cfg_attr(target_arch = "wasm32", inline)]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 pub(super) fn write(value: u64, form: Form, out: &mut Vec<u8>) -> Result<(), BoundsExceeded> {
 	match form {
 		Form::Quic => write_quic(value, out),
@@ -108,9 +109,15 @@ pub(super) fn write(value: u64, form: Form, out: &mut Vec<u8>) -> Result<(), Bou
 }
 
 // Each arm below is a fixed-size write or read, which is what keeps the codec as fast as
-// a hand-rolled `put_u16`/`get_u32`.
+// a hand-rolled `put_u16`/`get_u32`. Natively the varint path is `inline(always)` from
+// `Encoder::varint`/`Decoder::varint` down: left to LLVM's heuristics it stays a call
+// whose `Result<u64, DecodeError>` goes through memory, which doubles the cost of a varint
+// in a tight loop. wasm32 builds optimize for size, where forcing it grew moq-wasm ~10%
+// gzipped, so they keep the heuristics. The QUIC read is an if-chain rather than a `match`
+// on the tag: the jump table measured ~35% slower on a mixed-length stream.
 
-#[inline]
+#[cfg_attr(target_arch = "wasm32", inline)]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 fn write_quic(value: u64, out: &mut Vec<u8>) -> Result<(), BoundsExceeded> {
 	let (hi, lo) = to_halves(value);
 	if hi == 0 && lo < 1 << 6 {
@@ -129,7 +136,8 @@ fn write_quic(value: u64, out: &mut Vec<u8>) -> Result<(), BoundsExceeded> {
 	Ok(())
 }
 
-#[inline]
+#[cfg_attr(target_arch = "wasm32", inline)]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 fn write_leading_ones(value: u64, out: &mut Vec<u8>) {
 	let (hi, lo) = to_halves(value);
 	let [a, b, c, d] = lo.to_be_bytes();
@@ -156,7 +164,8 @@ fn write_leading_ones(value: u64, out: &mut Vec<u8>) {
 }
 
 /// Decode a varint in `form` from the front of `buf`, returning it and the rest of `buf`.
-#[inline]
+#[cfg_attr(target_arch = "wasm32", inline)]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 pub(super) fn read(buf: &[u8], form: Form) -> Result<(u64, &[u8]), DecodeError> {
 	match form {
 		Form::Quic => read_quic(buf),
@@ -164,31 +173,30 @@ pub(super) fn read(buf: &[u8], form: Form) -> Result<(u64, &[u8]), DecodeError> 
 	}
 }
 
-#[inline]
+#[cfg_attr(target_arch = "wasm32", inline)]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 fn read_quic(buf: &[u8]) -> Result<(u64, &[u8]), DecodeError> {
 	let Some((&first, rest)) = buf.split_first() else {
 		return Err(DecodeError::Short);
 	};
 
 	let be = u32::from_be_bytes;
-	Ok(match first >> 6 {
-		0 => (first as u64, rest),
-		1 => {
-			let ([a, b], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
-			(be([0, 0, a & 0x3f, *b]) as u64, rest)
-		}
-		2 => {
-			let ([a, b, c, d], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
-			(be([a & 0x3f, *b, *c, *d]) as u64, rest)
-		}
-		_ => {
-			let ([a, b, c, d, lo @ ..], rest) = buf.split_first_chunk::<8>().ok_or(DecodeError::Short)?;
-			(from_halves(be([a & 0x3f, *b, *c, *d]), be(*lo)), rest)
-		}
-	})
+	if first < 0x40 {
+		Ok((first as u64, rest))
+	} else if first < 0x80 {
+		let ([a, b], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+		Ok((be([0, 0, a & 0x3f, *b]) as u64, rest))
+	} else if first < 0xc0 {
+		let ([a, b, c, d], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+		Ok((be([a & 0x3f, *b, *c, *d]) as u64, rest))
+	} else {
+		let ([a, b, c, d, lo @ ..], rest) = buf.split_first_chunk::<8>().ok_or(DecodeError::Short)?;
+		Ok((from_halves(be([a & 0x3f, *b, *c, *d]), be(*lo)), rest))
+	}
 }
 
-#[inline]
+#[cfg_attr(target_arch = "wasm32", inline)]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 fn read_leading_ones(buf: &[u8], seven: bool) -> Result<(u64, &[u8]), DecodeError> {
 	let Some((&first, rest)) = buf.split_first() else {
 		return Err(DecodeError::Short);
