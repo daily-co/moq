@@ -3,7 +3,8 @@
 ## Goal
 
 A `moq-hls` media playlist advertises one `EXT-X-TARGETDURATION` for the
-whole run, as RFC 8216 requires, and never lists a segment longer than it.
+whole run, as RFC 8216 requires, and never lists a segment whose `EXTINF`,
+rounded to the nearest integer, exceeds it (RFC 8216 4.3.3.1).
 
 ## Plan
 
@@ -19,7 +20,8 @@ has reversed that decision in the 09-28 merged-PR audit:
   GOP (keyframe interval) configuration where one is known. Not the catalog's
   `durationMax` blindly: it is a 10s split ceiling, and advertising it would
   push every player's live edge back by that much.
-- A segment longer than the target is refused or split, never listed as is.
+- A segment whose rounded `EXTINF` exceeds the target is refused or split,
+  never listed as is. A 2.4s segment under a 2s target is valid and listed.
   Which one fits depends on where the long segment comes from (a reference
   record, or a non-reference rendition's snapped keyframe), so decide per
   case and say why.
@@ -29,7 +31,7 @@ has reversed that decision in the 09-28 merged-PR audit:
 
 Replace `target_duration_follows_the_observed_segments` with tests that pin a
 constant target across a window whose segment durations vary, and that cover
-the over-long segment path.
+the over-long segment path at the rounding boundary.
 
 ## Related
 
