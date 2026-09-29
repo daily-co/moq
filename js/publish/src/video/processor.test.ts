@@ -82,10 +82,11 @@ class FakeTrack {
 	}
 }
 
-// The capture worker is imported as an inlined blob URL, which the bun test loader can't resolve.
-mock.module("./capture-worker.ts?worker&inline", () => ({ default: FakeWorker }));
+// The capture worker is imported through a `?worklet` URL, which the bun test loader can't resolve.
+mock.module("./capture-worker.ts?worklet", () => ({ default: async () => "blob:fake-worker" }));
 
 Object.defineProperty(globalThis, "VideoFrame", { configurable: true, writable: true, value: FakeVideoFrame });
+Object.defineProperty(globalThis, "Worker", { configurable: true, writable: true, value: FakeWorker });
 
 const { TrackProcessor } = await import("./processor.ts");
 
@@ -95,7 +96,7 @@ test("captures through the worker, transferring a clone", async () => {
 	arrivalStep = 0;
 	spawned.length = 0;
 
-	// The worker is constructed synchronously inside TrackProcessor, so bracket the whole call.
+	// Bracket the whole call, which spawns the worker.
 	const before = performance.now() * 1000;
 
 	const track = new FakeTrack();

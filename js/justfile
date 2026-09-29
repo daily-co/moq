@@ -84,12 +84,17 @@ test $FILES="":
     	exit 0
     fi
     bun install --frozen-lockfile
-    bun test common/declarations.test.ts common/deps.test.ts common/workers.test.ts
+    bun test common/declarations.test.ts common/deps.test.ts common/workers.test.ts common/worklet.test.ts
     if tty -s; then
         bun run --filter='*' --elide-lines=0 test
     else
     	bun run --filter='*' test
     fi
+
+# Bundle the worklets with Vite, webpack, esbuild, and Bun, and load them in Chromium, with and
+# without a strict CSP. Manual only: it installs webpack and launches a browser.
+worklet-matrix:
+    bun common/worklet-matrix.ts
 
 # Build all packages.
 build:

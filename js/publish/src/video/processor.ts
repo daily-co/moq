@@ -1,7 +1,8 @@
 import { Time } from "@moq/net";
+import { hostedAssets } from "../assets";
 import type { FromWorker, ToWorker } from "./capture-worker";
-// Compiled and inlined as a blob URL by Vite.
-import CaptureWorker from "./capture-worker.ts?worker&inline";
+// A blob: URL, or a hosted file when assets() is set; see vite-plugin-worklet.
+import CaptureWorker from "./capture-worker.ts?worklet";
 import type { StreamTrack } from "./types";
 
 /**
@@ -144,9 +145,10 @@ async function spawn(): Promise<Handle | undefined> {
 	let worker: Handle;
 
 	try {
-		worker = handle(new CaptureWorker());
+		worker = handle(new Worker(await CaptureWorker(hostedAssets())));
 	} catch (err) {
-		// A strict CSP can refuse blob: workers, so treat it like an engine without the API.
+		// A strict CSP can refuse blob: workers, so treat it like an engine without the API. A hosted
+		// file that fails to load reports through onerror instead.
 		console.warn("moq-publish: failed to start the capture worker", err);
 		return undefined;
 	}
