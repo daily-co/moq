@@ -16,7 +16,7 @@ impl Message for SessionInfo {
 			}
 		}
 
-		let bitrate = match r.varint()?.into_inner() {
+		let bitrate = match r.varint()? {
 			0 => None,
 			bitrate => Some(bitrate),
 		};
@@ -32,7 +32,7 @@ impl Message for SessionInfo {
 			}
 		}
 
-		w.varint(VarInt::from(self.bitrate.unwrap_or(0)))?;
+		w.varint(self.bitrate.unwrap_or(0))?;
 		Ok(())
 	}
 }

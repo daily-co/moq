@@ -111,11 +111,11 @@ impl Message for SubscribeNamespaceLegacy<'_> {
 		}
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(0)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 		encode_namespace(w, &self.namespace)?;
 		if matches!(version, Version::Draft16 | Version::Draft17) {
-			w.varint(VarInt::from(self.subscribe_options))?;
+			w.varint(self.subscribe_options)?;
 		}
 		encode_params!(w, version, HIDDEN_PARAM => hidden_param(self.hidden));
 		Ok(())
@@ -127,11 +127,11 @@ impl Message for SubscribeNamespaceLegacy<'_> {
 		}
 		let request_id = RequestId::decode(r, version)?;
 		if version == Version::Draft17 {
-			let _required_request_id_delta = r.varint()?.into_inner();
+			let _required_request_id_delta = r.varint()?;
 		}
 		let namespace = decode_namespace(r)?;
 		let subscribe_options = match version {
-			Version::Draft16 | Version::Draft17 => r.varint()?.into_inner(),
+			Version::Draft16 | Version::Draft17 => r.varint()?,
 			_ => 0x01,
 		};
 
@@ -179,14 +179,14 @@ impl Message for SubscribeNamespaceError<'_> {
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
 
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
-		let error_code = r.varint()?.into_inner();
+		let error_code = r.varint()?;
 		let reason_phrase = Cow::Owned(r.string()?);
 
 		Ok(Self {
@@ -398,7 +398,7 @@ mod tests {
 		let mut buf = Vec::new();
 		encode_namespace(&mut Encoder::new(&mut buf, version.into()), &Path::new("a")).unwrap();
 		// Number of Parameters = 0.
-		Encoder::new(&mut buf, version.into()).varint(VarInt::ZERO).unwrap();
+		Encoder::new(&mut buf, version.into()).varint(0).unwrap();
 
 		let mut bytes = bytes::Bytes::from(buf);
 		assert!(matches!(

@@ -30,16 +30,17 @@ Decided in planning (2026-09-27), with the spike data in
   and bytes out, no runtime. The async helper methods move behind an `async`
   cargo feature; rs2ts reads the crate without it and JS reimplements the
   helpers with Promises. No second crate.
-- `VarInt` holds the full 64-bit range; the spec is not bounded to 2^53. The
-  leading-ones form (moq-transport draft-17+) carries all of it, and the QUIC
-  form (moq-lite, drafts 14-16) refuses anything past 2^62 - 1 rather than
-  truncating. Rust's `VarInt` newtype carries Encode/Decode and JS gets a
-  matching `VarInt` type with checked conversion to and from `number`.
+- Values are plain `u64` in Rust, and varint is a wire encoding in the codec,
+  not a type. The spec is not bounded to 2^53: the leading-ones form
+  (moq-transport draft-17+) carries all 64 bits, and the QUIC form (moq-lite,
+  drafts 14-16) refuses anything past 2^62 - 1 rather than truncating. Rust
+  `u64` maps to a TypeScript `U64` (two `u32` halves), generically, with
+  checked conversion to and from `number`.
 - The generated TypeScript is committed and a CI lane regenerates it and
   fails on drift, so JS contributors and npm publishing never need the
   nightly toolchain Charon pins. It lives inside js/net and `@moq/net` stays
   the package.
-- The `@moq/net` API may change (disposable handles, `VarInt`) as long as it
+- The `@moq/net` API may change (disposable handles, `U64`) as long as it
   is no worse to use; watch, publish, hang, and the demos update in the same
   change.
 - Parity: `just test interop --all`, plus moq-net's own tests translated with

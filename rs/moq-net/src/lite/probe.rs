@@ -23,13 +23,13 @@ impl Message for Probe {
 
 		// 0 means unknown, the same as RTT below. A publisher whose transport
 		// exposes no congestion controller reports the RTT half alone.
-		let bitrate = match r.varint()?.into_inner() {
+		let bitrate = match r.varint()? {
 			0 => None,
 			v => Some(v),
 		};
 		let rtt = match version.has_probe_rtt() {
 			false => None,
-			true => match r.varint()?.into_inner() {
+			true => match r.varint()? {
 				0 => None,
 				v => Some(v),
 			},
@@ -48,10 +48,10 @@ impl Message for Probe {
 
 		// 0 means unknown; round Some(0) up to 1.
 		let wire = self.bitrate.map(|v| v.max(1)).unwrap_or(0);
-		w.varint(VarInt::from(wire))?;
+		w.varint(wire)?;
 		if version.has_probe_rtt() {
 			let wire = self.rtt.map(|v| v.max(1)).unwrap_or(0);
-			w.varint(VarInt::from(wire))?;
+			w.varint(wire)?;
 		}
 		Ok(())
 	}

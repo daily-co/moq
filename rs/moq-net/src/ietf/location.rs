@@ -1,4 +1,4 @@
-use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt};
+use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 
 use super::Version;
 
@@ -10,16 +10,16 @@ pub struct Location {
 
 impl Encode<Version> for Location {
 	fn encode(&self, w: &mut Encoder<'_>, _: Version) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(self.group))?;
-		w.varint(VarInt::from(self.object))?;
+		w.varint(self.group)?;
+		w.varint(self.object)?;
 		Ok(())
 	}
 }
 
 impl Decode<Version> for Location {
 	fn decode(buf: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		let group = buf.varint()?.into_inner();
-		let object = buf.varint()?.into_inner();
+		let group = buf.varint()?;
+		let object = buf.varint()?;
 		Ok(Self { group, object })
 	}
 }

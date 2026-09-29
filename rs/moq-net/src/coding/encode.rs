@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use super::{BoundsExceeded, Form, VarInt};
+use super::{BoundsExceeded, Form, varint};
 
 /// An error that occurs during encoding.
 #[derive(thiserror::Error, Debug, Clone)]
@@ -93,8 +93,8 @@ impl<'a> Encoder<'a> {
 
 	/// Write a varint, or fail with [`EncodeError::BoundsExceeded`] if the form cannot carry it.
 	#[inline]
-	pub fn varint(&mut self, v: VarInt) -> Result<(), EncodeError> {
-		Ok(v.write(self.form, self.buf)?)
+	pub fn varint(&mut self, v: u64) -> Result<(), EncodeError> {
+		Ok(varint::write(v, self.form, self.buf)?)
 	}
 
 	/// Write an optional varint: `None` as 0, and `Some(n)` as `n + 1`.
@@ -103,12 +103,12 @@ impl<'a> Encoder<'a> {
 			Some(v) => v.checked_add(1).ok_or(EncodeError::TooLarge)?,
 			None => 0,
 		};
-		self.varint(v.into())
+		self.varint(v)
 	}
 
 	/// Write a varint length, then the raw bytes.
 	pub fn bytes(&mut self, v: &[u8]) -> Result<(), EncodeError> {
-		self.varint(v.len().into())?;
+		self.varint(v.len() as u64)?;
 		self.slice(v);
 		Ok(())
 	}
@@ -125,7 +125,7 @@ impl<'a> Encoder<'a> {
 		self.buf.push(0);
 		Prefix {
 			body: self.buf.len(),
-			kind: PrefixKind::VarInt,
+			kind: PrefixKind::Varint,
 		}
 	}
 
@@ -148,10 +148,10 @@ impl<'a> Encoder<'a> {
 				let size = u16::try_from(end - body).map_err(|_| EncodeError::TooLarge)?;
 				self.buf[body - 2..body].copy_from_slice(&size.to_be_bytes());
 			}
-			PrefixKind::VarInt => {
+			PrefixKind::Varint => {
 				// Encode the size past the body, then move it into the reserved byte,
 				// shifting the body up when the size needs more than that one byte.
-				VarInt::from(end - body).write(self.form, self.buf)?;
+				varint::write((end - body) as u64, self.form, self.buf)?;
 				let len = self.buf.len() - end;
 				if len == 1 {
 					self.buf[body - 1] = self.buf[end];
@@ -181,7 +181,7 @@ pub struct Prefix {
 
 #[derive(Debug)]
 enum PrefixKind {
-	VarInt,
+	Varint,
 	U16,
 }
 
@@ -203,7 +203,7 @@ mod tests {
 
 			let mut r = super::super::Decoder::new(&buf[1..], Form::Quic);
 			assert_eq!(buf[0], 0xaa);
-			assert_eq!(r.varint().unwrap().into_inner(), size as u64);
+			assert_eq!(r.varint().unwrap(), size as u64);
 			assert_eq!(r.slice(size).unwrap(), vec![0x55; size]);
 			assert_eq!(r.rest(), [0xbb]);
 		}

@@ -23,7 +23,7 @@ impl Message for GoAway<'_> {
 		w.string(&self.new_session_uri)?;
 		// Draft-17+ adds a timeout field.
 		if !matches!(version, Version::Draft14 | Version::Draft15 | Version::Draft16) {
-			w.varint(VarInt::from(self.timeout))?;
+			w.varint(self.timeout)?;
 		}
 		// Draft-18 (#1559) requires a Request ID when GOAWAY is sent on the
 		// control stream, which is the only place we send it. We don't track
@@ -32,7 +32,7 @@ impl Message for GoAway<'_> {
 		// conformant peer must treat as a PROTOCOL_VIOLATION. Draft-19
 		// removed the field again (#1623).
 		if matches!(version, Version::Draft18) {
-			w.varint(VarInt::ZERO)?;
+			w.varint(0)?;
 		}
 		Ok(())
 	}
@@ -47,17 +47,17 @@ impl Message for GoAway<'_> {
 		let timeout = match version {
 			Version::Draft14 | Version::Draft15 | Version::Draft16 => 0,
 			Version::Draft18 => {
-				let timeout = r.varint()?.into_inner();
+				let timeout = r.varint()?;
 				// Draft-18 trailing Request ID (#1559): required on the control
 				// stream, but tolerate its absence from lenient peers. We don't
 				// act on per-request GOAWAY so the value is discarded. Draft-19
 				// removed this field again (#1623).
 				if !r.is_empty() {
-					let _ = r.varint()?.into_inner();
+					let _ = r.varint()?;
 				}
 				timeout
 			}
-			_ => r.varint()?.into_inner(),
+			_ => r.varint()?,
 		};
 		Ok(Self {
 			new_session_uri,
@@ -180,13 +180,9 @@ mod tests {
 		Encoder::new(&mut buf, Version::Draft18.into())
 			.string("moqt://relay.example/")
 			.unwrap();
-		Encoder::new(&mut buf, Version::Draft18.into())
-			.varint(VarInt::from(5000u64))
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft18.into()).varint(5000u64).unwrap();
 		// Optional trailing Request ID:
-		Encoder::new(&mut buf, Version::Draft18.into())
-			.varint(VarInt::from(42u64))
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft18.into()).varint(42u64).unwrap();
 
 		let mut bytes = bytes::Bytes::from(buf.to_vec());
 		let decoded: GoAway = crate::coding::decode_buf(&mut bytes, Version::Draft18, GoAway::decode_msg).unwrap();

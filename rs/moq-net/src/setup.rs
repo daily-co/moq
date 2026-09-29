@@ -6,7 +6,7 @@ use bytes::Bytes;
 
 use crate::{
 	Version,
-	coding::{self, Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{self, Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 	ietf, lite,
 };
 
@@ -53,7 +53,7 @@ impl Setup {
 impl Encode<Version> for Setup {
 	fn encode(&self, w: &mut Encoder<'_>, v: Version) -> Result<(), EncodeError> {
 		Self::check_version(v);
-		w.varint(VarInt::from(SETUP_V17))?;
+		w.varint(SETUP_V17)?;
 		let prefix = w.prefix_u16();
 		w.slice(&self.parameters);
 		w.fill(prefix)
@@ -63,7 +63,7 @@ impl Encode<Version> for Setup {
 impl Decode<Version> for Setup {
 	fn decode(r: &mut Decoder<'_>, v: Version) -> Result<Self, DecodeError> {
 		Self::check_version(v);
-		let kind = r.varint()?.into_inner();
+		let kind = r.varint()?;
 		if kind != SETUP_V17 {
 			return Err(DecodeError::InvalidValue);
 		}
@@ -164,7 +164,7 @@ impl Encode<Version> for Client {
 fn decode_body<'a>(r: &mut Decoder<'a>, v: Version) -> Result<Decoder<'a>, DecodeError> {
 	let size = match SetupVersion::from_version(v) {
 		SetupVersion::Draft14 | SetupVersion::Draft15Plus => r.u16()? as usize,
-		SetupVersion::LiteLegacy => usize::try_from(r.varint()?)?,
+		SetupVersion::LiteLegacy => usize::try_from(r.varint()?).map_err(|_| DecodeError::BoundsExceeded)?,
 		SetupVersion::Modern | SetupVersion::Unsupported => return Err(DecodeError::Version),
 	};
 	r.sub(size)

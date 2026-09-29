@@ -84,8 +84,8 @@ impl<'a> PathRef<'a> {
 impl Encode<Version> for PathRef<'_> {
 	fn encode(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		if version.has_announce_compression() {
-			w.varint(VarInt::from(self.base))?;
-			w.varint(VarInt::from(self.keep))?;
+			w.varint(self.base)?;
+			w.varint(self.keep)?;
 		} else if self.base != 0 || self.keep != 0 {
 			return Err(EncodeError::Version);
 		}
@@ -98,8 +98,8 @@ impl Decode<Version> for PathRef<'_> {
 		if !version.has_announce_compression() {
 			return Ok(Self::literal(Path::decode(buf, version)?));
 		}
-		let base = buf.varint()?.into_inner();
-		let keep = buf.varint()?.into_inner();
+		let base = buf.varint()?;
+		let keep = buf.varint()?;
 		if base == 0 && keep != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
@@ -139,9 +139,9 @@ impl Encode<Version> for HopsRef {
 			}
 			return self.literal.encode(w, version);
 		}
-		w.varint(VarInt::from(self.base))?;
+		w.varint(self.base)?;
 		self.literal.encode(w, version)?;
-		w.varint(VarInt::from(self.keep))
+		w.varint(self.keep)
 	}
 }
 
@@ -150,9 +150,9 @@ impl Decode<Version> for HopsRef {
 		if !version.has_announce_compression() {
 			return Ok(Self::literal(Hops::decode(buf, version)?));
 		}
-		let base = buf.varint()?.into_inner();
+		let base = buf.varint()?;
 		let literal = Hops::decode(buf, version)?;
-		let keep = buf.varint()?.into_inner();
+		let keep = buf.varint()?;
 		if base == 0 && keep != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
@@ -190,8 +190,8 @@ impl Encode<Version> for Cost {
 		if !version.has_route_cost() {
 			return Ok(());
 		}
-		w.varint(VarInt::from(self.warm))?;
-		w.varint(VarInt::from(self.cold))
+		w.varint(self.warm)?;
+		w.varint(self.cold)
 	}
 }
 
@@ -201,8 +201,8 @@ impl Decode<Version> for Cost {
 			return Ok(Cost::UNKNOWN);
 		}
 		Ok(Cost {
-			warm: buf.varint()?.into_inner(),
-			cold: buf.varint()?.into_inner(),
+			warm: buf.varint()?,
+			cold: buf.varint()?,
 		})
 	}
 }
@@ -221,7 +221,7 @@ impl Encode<Version> for AnnounceBroadcast<'_> {
 				// Decode-only: an unknown type is never sent.
 				Self::Skipped => return Err(EncodeError::Unsupported),
 			};
-			w.varint(VarInt::from(typ))?;
+			w.varint(typ)?;
 
 			let prefix = w.prefix_varint();
 			match self {
@@ -230,9 +230,9 @@ impl Encode<Version> for AnnounceBroadcast<'_> {
 					hops.encode(w, version)?;
 					cost.encode(w, version)?;
 				}
-				Self::EndedId { id } => w.varint(VarInt::from(*id))?,
+				Self::EndedId { id } => w.varint(*id)?,
 				Self::Restart { id, hops, cost } => {
-					w.varint(VarInt::from(*id))?;
+					w.varint(*id)?;
 					hops.encode(w, version)?;
 					cost.encode(w, version)?;
 				}
@@ -273,7 +273,7 @@ impl Decode<Version> for AnnounceBroadcast<'_> {
 	fn decode(buf: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		if version.has_announce_id() {
 			// Lite06+: outer type, then a size-prefixed body decoded within its bounds.
-			let typ = buf.varint()?.into_inner();
+			let typ = buf.varint()?;
 			let size = decode_size(buf)?;
 			let mut body = buf.sub(size)?;
 			let msg = match typ {
@@ -282,11 +282,9 @@ impl Decode<Version> for AnnounceBroadcast<'_> {
 					hops: HopsRef::decode(&mut body, version)?,
 					cost: Cost::decode(&mut body, version)?,
 				},
-				ANNOUNCE_END => Self::EndedId {
-					id: body.varint()?.into_inner(),
-				},
+				ANNOUNCE_END => Self::EndedId { id: body.varint()? },
 				ANNOUNCE_RESTART => Self::Restart {
-					id: body.varint()?.into_inner(),
+					id: body.varint()?,
 					hops: HopsRef::decode(&mut body, version)?,
 					cost: Cost::decode(&mut body, version)?,
 				},
@@ -325,7 +323,7 @@ impl AnnounceBroadcast<'_> {
 			Version::Lite03 => {
 				// Lite03 sends only a hop count, not individual ids. Fill with UNKNOWN placeholders.
 				// push() enforces MAX_HOPS and `?` lifts the overflow to DecodeError::BoundsExceeded.
-				let count = r.varint()?.into_inner() as usize;
+				let count = r.varint()? as usize;
 				let mut list = Hops::new();
 				for _ in 0..count {
 					list.push(Hop::UNKNOWN)?;
@@ -361,7 +359,7 @@ fn encode_hops(w: &mut Encoder<'_>, version: Version, hops: &Hops) -> Result<(),
 	match version {
 		Version::Lite01 | Version::Lite02 => Ok(()),
 		Version::Lite03 => {
-			w.varint(VarInt::from(hops.len()))?;
+			w.varint(hops.len() as u64)?;
 			Ok(())
 		}
 		_ => hops.encode(w, version),
@@ -389,7 +387,7 @@ impl Message for AnnounceRequest<'_> {
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let prefix = Path::decode(r, version)?;
 		let exclude_hop = match version.has_exclude_hop() {
-			true => r.varint()?.into_inner(),
+			true => r.varint()?,
 			false => 0,
 		};
 		let hidden = match version.has_hidden() {
@@ -406,7 +404,7 @@ impl Message for AnnounceRequest<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.prefix.encode(w, version)?;
 		if version.has_exclude_hop() {
-			w.varint(VarInt::from(self.exclude_hop))?;
+			w.varint(self.exclude_hop)?;
 		}
 		if version.has_hidden() {
 			w.bool(self.hidden);
@@ -459,7 +457,7 @@ impl Message for AnnounceInit<'_> {
 			}
 		}
 
-		let count = r.varint()?.into_inner();
+		let count = r.varint()?;
 
 		// Don't allocate more than 1024 elements upfront
 		let mut paths = Vec::with_capacity(count.min(1024) as usize);
@@ -479,7 +477,7 @@ impl Message for AnnounceInit<'_> {
 			}
 		}
 
-		w.varint(VarInt::from(self.suffixes.len()))?;
+		w.varint(self.suffixes.len() as u64)?;
 		for path in &self.suffixes {
 			path.encode(w, version)?;
 		}
@@ -509,7 +507,7 @@ impl Message for AnnounceOk {
 		}
 
 		let origin = Hop::decode(r, version)?;
-		let active = r.varint()?.into_inner();
+		let active = r.varint()?;
 		Ok(Self { origin, active })
 	}
 
@@ -519,7 +517,7 @@ impl Message for AnnounceOk {
 		}
 
 		self.origin.encode(w, version)?;
-		w.varint(VarInt::from(self.active))
+		w.varint(self.active)
 	}
 }
 
@@ -808,11 +806,9 @@ mod tests {
 			.unwrap();
 
 		let mut buf = Vec::new();
+		Encoder::new(&mut buf, Version::Lite06.into()).varint(4u64).unwrap();
 		Encoder::new(&mut buf, Version::Lite06.into())
-			.varint(VarInt::from(4u64))
-			.unwrap();
-		Encoder::new(&mut buf, Version::Lite06.into())
-			.varint(VarInt::from(body.len()))
+			.varint(body.len() as u64)
 			.unwrap();
 		buf.extend_from_slice(&body);
 
@@ -871,7 +867,7 @@ mod tests {
 			.unwrap();
 		body.push(2);
 		Encoder::new(&mut buf, Version::Lite07.into())
-			.varint(VarInt::from(body.len()))
+			.varint(body.len() as u64)
 			.unwrap();
 		buf.extend_from_slice(&body);
 		assert!(crate::coding::decode_buf(&mut &buf[..], Version::Lite07, AnnounceRequest::decode).is_err());

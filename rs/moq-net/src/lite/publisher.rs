@@ -1938,7 +1938,7 @@ fn buffer_frame_info<W: crate::transport::poll::SendStream>(
 	if timescale.is_some() {
 		buffer_zigzag_delta(writer, timestamp.value(), prev_ts)?;
 	}
-	writer.buffer(&crate::coding::VarInt::from(size))?;
+	writer.buffer_varint(size)?;
 	Ok(())
 }
 
@@ -1952,7 +1952,7 @@ fn buffer_zigzag_delta<W: crate::transport::poll::SendStream>(
 	let delta: i64 = (curr as i128 - *prev as i128)
 		.try_into()
 		.map_err(|_| Error::BoundsExceeded(crate::coding::BoundsExceeded))?;
-	writer.buffer(&crate::coding::VarInt::from_zigzag(delta))?;
+	writer.buffer_varint(crate::coding::varint::zigzag(delta))?;
 	*prev = curr;
 	Ok(())
 }

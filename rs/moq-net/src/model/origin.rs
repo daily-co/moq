@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
 	AsPath, Error, InvalidPattern, Path, PathOwned, Pattern, Patterns,
-	coding::{BoundsExceeded, Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{BoundsExceeded, Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 	path::Segment,
 	runtime::{Instant, Timers},
 	time::Clock,
@@ -158,14 +158,14 @@ impl fmt::Display for Hop {
 
 impl<V> Encode<V> for Hop {
 	fn encode(&self, w: &mut Encoder<'_>, _: V) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(self.id))?;
+		w.varint(self.id)?;
 		Ok(())
 	}
 }
 
 impl<V> Decode<V> for Hop {
 	fn decode(r: &mut Decoder<'_>, _: V) -> Result<Self, DecodeError> {
-		Self::from_wire(r.varint()?.into_inner())
+		Self::from_wire(r.varint()?)
 	}
 }
 
@@ -301,7 +301,7 @@ impl<'a> IntoIterator for &'a Hops {
 
 impl<V: Copy> Encode<V> for Hops {
 	fn encode(&self, w: &mut Encoder<'_>, version: V) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(self.0.len()))?;
+		w.varint(self.0.len() as u64)?;
 		for origin in &self.0 {
 			origin.encode(w, version)?;
 		}
@@ -311,7 +311,7 @@ impl<V: Copy> Encode<V> for Hops {
 
 impl<V: Copy> Decode<V> for Hops {
 	fn decode(r: &mut Decoder<'_>, version: V) -> Result<Self, DecodeError> {
-		let count = r.varint()?.into_inner() as usize;
+		let count = r.varint()? as usize;
 		if count > MAX_HOPS {
 			return Err(DecodeError::BoundsExceeded);
 		}

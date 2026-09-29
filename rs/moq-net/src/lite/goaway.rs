@@ -25,7 +25,7 @@ impl Message for Goaway<'_> {
 		// cap. Rejected from the string's length prefix alone, before allocating
 		// or validating the payload. (Buffering is bounded separately by the
 		// outer message-size prefix that frames every lite control message.)
-		let len = r.varint()?.into_inner();
+		let len = r.varint()?;
 		if len > 8192 {
 			return Err(DecodeError::InvalidValue);
 		}

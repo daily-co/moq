@@ -14,7 +14,7 @@ use bytes::Bytes;
 
 use crate::{
 	Hops, Path, PathOwned, Pattern,
-	coding::{Decode, Decoder, Encode, Encoder, Form, VarInt},
+	coding::{Decode, Decoder, Encode, Encoder, Form, varint},
 	ietf, lite,
 	path::Relative,
 };
@@ -327,7 +327,7 @@ pub fn ietf_wire(data: &[u8]) -> bool {
 /// disagree about which byte sequences are even legal.
 ///
 /// The leading-ones form spans the full `u64`, while the QUIC form stops at
-/// [`VarInt::MAX_QUIC`]; a value always re-encodes in the form it was read in.
+/// [`crate::coding::varint::MAX_QUIC`]; a value always re-encodes in the form it was read in.
 pub fn varint(data: &[u8]) -> bool {
 	let Some((&selector, rest)) = data.split_first() else {
 		return false;
@@ -339,24 +339,21 @@ pub fn varint(data: &[u8]) -> bool {
 		_ => IETF_VERSIONS[(selector as usize / 2) % IETF_VERSIONS.len()].into(),
 	};
 
-	let Ok((value, _)) = VarInt::decode_slice(rest, version) else {
+	let Ok(value) = Decoder::new(rest, version.into()).varint() else {
 		return false;
 	};
 
 	// Zigzag is a bijection on top of the wire value, so it must round-trip.
-	let signed = value.to_zigzag();
-	assert_eq!(VarInt::from_zigzag(signed), value, "zigzag is not its own inverse");
+	let signed = varint::unzigzag(value);
+	assert_eq!(varint::zigzag(signed), value, "zigzag is not its own inverse");
 
-	let encoded = value
-		.encode_bytes(version)
+	let mut encoded = Vec::new();
+	Encoder::new(&mut encoded, version.into())
+		.varint(value)
 		.expect("a varint re-encodes in the form it was read in");
-	let (again, used) = VarInt::decode_slice(&encoded, version).expect("could not decode our own encoding");
-	assert_eq!(
-		used,
-		encoded.len(),
-		"our own encoding left {} bytes",
-		encoded.len() - used
-	);
+	let mut echo = Decoder::new(&encoded, version.into());
+	let again = echo.varint().expect("could not decode our own encoding");
+	assert!(echo.is_empty(), "our own encoding left {} bytes", echo.remaining());
 	assert_eq!(value, again, "varint did not survive a round trip");
 
 	true
@@ -506,7 +503,7 @@ fn bench_form(ietf: bool) -> Form {
 pub fn encode_varints(values: &[u64], ietf: bool, out: &mut Vec<u8>) {
 	let mut w = Encoder::new(out, bench_form(ietf));
 	for value in values {
-		w.varint((*value).into()).unwrap();
+		w.varint(*value).unwrap();
 	}
 }
 
@@ -515,7 +512,7 @@ pub fn decode_varints(data: &[u8], ietf: bool) -> u64 {
 	let mut r = Decoder::new(data, bench_form(ietf));
 	let mut sum = 0u64;
 	while !r.is_empty() {
-		sum = sum.wrapping_add(r.varint().unwrap().into_inner());
+		sum = sum.wrapping_add(r.varint().unwrap());
 	}
 	sum
 }

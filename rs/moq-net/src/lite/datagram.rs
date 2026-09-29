@@ -7,7 +7,7 @@
 
 use bytes::Bytes;
 
-use crate::coding::{DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt};
+use crate::coding::{DecodeError, Decoder, Encode, EncodeError, Encoder};
 
 use super::Version;
 
@@ -30,9 +30,9 @@ impl Encode<Version> for Datagram {
 			return Err(EncodeError::Version);
 		}
 
-		w.varint(VarInt::from(self.subscribe))?;
-		w.varint(VarInt::from(self.sequence))?;
-		w.varint(VarInt::from(self.timestamp))?;
+		w.varint(self.subscribe)?;
+		w.varint(self.sequence)?;
+		w.varint(self.timestamp)?;
 
 		// Payload runs to the datagram boundary: written raw, no length prefix.
 		w.slice(&self.payload);
@@ -48,9 +48,9 @@ impl Datagram {
 		}
 
 		let mut r = Decoder::new(&buf, version.into());
-		let subscribe = r.varint()?.into_inner();
-		let sequence = r.varint()?.into_inner();
-		let timestamp = r.varint()?.into_inner();
+		let subscribe = r.varint()?;
+		let sequence = r.varint()?;
+		let timestamp = r.varint()?;
 
 		// Everything remaining is the payload (the datagram boundary delimits it).
 		let payload = buf.slice(buf.len() - r.remaining()..);

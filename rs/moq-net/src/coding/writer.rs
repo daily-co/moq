@@ -37,9 +37,26 @@ impl<S: crate::transport::poll::SendStream, V: StreamCodes> Writer<S, V> {
 	where
 		V: Into<Form> + Copy,
 	{
+		let version = self.version;
+		self.buffer_with(|w| msg.encode(w, version))
+	}
+
+	/// Encode a varint into the write buffer, to be sent by [`Self::poll_flush`].
+	pub fn buffer_varint(&mut self, value: u64) -> Result<(), Error>
+	where
+		V: Into<Form> + Copy,
+	{
+		self.buffer_with(|w| w.varint(value))
+	}
+
+	/// Run `encode` into the write buffer, dropping its partial bytes if it fails.
+	fn buffer_with(&mut self, encode: impl FnOnce(&mut Encoder<'_>) -> Result<(), EncodeError>) -> Result<(), Error>
+	where
+		V: Into<Form> + Copy,
+	{
 		let start = self.buffer.len();
 		let mut w = Encoder::new(&mut self.buffer, self.version.into());
-		if let Err(err) = msg.encode(&mut w, self.version) {
+		if let Err(err) = encode(&mut w) {
 			// Drop the partial encode: flushing it would corrupt the stream.
 			self.buffer.truncate(start);
 			return Err(err.into());
@@ -78,6 +95,15 @@ impl<S: crate::transport::poll::SendStream, V: StreamCodes> Writer<S, V> {
 		V: Into<Form> + Copy,
 	{
 		self.buffer(msg)?;
+		std::future::poll_fn(|cx| self.poll_flush(cx)).await
+	}
+
+	/// Encode a varint to the stream, with the same cancellation rules as [`Self::encode`].
+	pub async fn varint(&mut self, value: u64) -> Result<(), Error>
+	where
+		V: Into<Form> + Copy,
+	{
+		self.buffer_varint(value)?;
 		std::future::poll_fn(|cx| self.poll_flush(cx)).await
 	}
 
@@ -200,7 +226,7 @@ impl<S: crate::transport::poll::SendStream, V: StreamCodes> Writer<S, V> {
 impl<S: crate::transport::poll::SendStream> Writer<S, ietf::Version> {
 	/// Encode an IETF `Message` to the stream, writing `[type_id][size][body]`.
 	pub async fn encode_message<T: ietf::Message>(&mut self, msg: &T) -> Result<(), Error> {
-		self.buffer(&VarInt::from(T::ID))?;
+		self.buffer_varint(T::ID)?;
 		self.encode(msg).await
 	}
 }
@@ -320,9 +346,9 @@ mod tests {
 	fn a_failed_encode_leaves_no_partial_bytes() {
 		let mut writer = Writer::new(SinkSend::new(Log::default()), crate::lite::Version::Lite05);
 
-		writer.buffer(&VarInt::from_u32(5)).unwrap();
+		writer.buffer_varint(5).unwrap();
 		writer.buffer(&Poison).unwrap_err();
-		writer.buffer(&VarInt::from_u32(7)).unwrap();
+		writer.buffer_varint(7).unwrap();
 
 		let log = writer.stream.as_ref().unwrap().log.clone();
 		let mut cx = std::task::Context::from_waker(Waker::noop());
@@ -341,13 +367,13 @@ mod tests {
 		);
 		let log = writer.stream.as_ref().unwrap().log.clone();
 
-		writer.buffer(&VarInt::from_u32(5)).unwrap();
+		writer.buffer_varint(5).unwrap();
 		let mut cx = std::task::Context::from_waker(Waker::noop());
 		assert!(writer.poll_flush(&mut cx).is_pending());
 		assert!(log.writes.lock().unwrap().is_empty());
 
 		// The bytes survive the Pending (and a second message queued behind them).
-		writer.buffer(&VarInt::from_u32(7)).unwrap();
+		writer.buffer_varint(7).unwrap();
 		let Ok(mut open) = gate.write() else {
 			panic!("gate closed")
 		};

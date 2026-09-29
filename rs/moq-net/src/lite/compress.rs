@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
 	Error, Hop, Hops, Path, PathOwned,
-	coding::{Form, VarInt},
+	coding::{Form, varint},
 };
 
 use super::{HopsRef, PathRef, Version};
@@ -336,9 +336,7 @@ impl AnnounceEncoder {
 
 /// The bytes `value` takes as a moq-lite varint.
 fn varint_size(value: u64) -> usize {
-	VarInt::from(value)
-		.size(Form::Quic)
-		.expect("sizing a value in varint range")
+	varint::size(value, Form::Quic).expect("sizing a value in varint range")
 }
 
 /// The bytes `path` takes on the wire: a varint length, then the string.

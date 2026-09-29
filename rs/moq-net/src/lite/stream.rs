@@ -18,7 +18,7 @@ pub enum ControlType {
 
 impl Decode<Version> for ControlType {
 	fn decode(r: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		let t = r.varint()?.into_inner();
+		let t = r.varint()?;
 		t.try_into().map_err(|_| DecodeError::InvalidValue)
 	}
 }
@@ -26,7 +26,7 @@ impl Decode<Version> for ControlType {
 impl Encode<Version> for ControlType {
 	fn encode(&self, w: &mut Encoder<'_>, _: Version) -> Result<(), EncodeError> {
 		let v: u64 = (*self).into();
-		w.varint(VarInt::from(v))?;
+		w.varint(v)?;
 		Ok(())
 	}
 }
@@ -42,7 +42,7 @@ pub enum DataType {
 
 impl Decode<Version> for DataType {
 	fn decode(r: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		let t = r.varint()?.into_inner();
+		let t = r.varint()?;
 		t.try_into().map_err(|_| DecodeError::InvalidValue)
 	}
 }
@@ -50,7 +50,7 @@ impl Decode<Version> for DataType {
 impl Encode<Version> for DataType {
 	fn encode(&self, w: &mut Encoder<'_>, _: Version) -> Result<(), EncodeError> {
 		let v: u64 = (*self).into();
-		w.varint(VarInt::from(v))?;
+		w.varint(v)?;
 		Ok(())
 	}
 }

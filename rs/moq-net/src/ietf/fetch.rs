@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::{
 	Path,
-	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 	ietf::{
 		GroupOrder, Location, Parameters, RequestId,
 		namespace::{decode_namespace, encode_namespace},
@@ -53,7 +53,7 @@ impl Encode<Version> for FetchType<'_> {
 			} => {
 				w.u8(2);
 				subscriber_request_id.encode(w, version)?;
-				w.varint(VarInt::from(*group_offset))?;
+				w.varint(*group_offset)?;
 			}
 			FetchType::AbsoluteJoining {
 				subscriber_request_id,
@@ -61,7 +61,7 @@ impl Encode<Version> for FetchType<'_> {
 			} => {
 				w.u8(3);
 				subscriber_request_id.encode(w, version)?;
-				w.varint(VarInt::from(*group_id))?;
+				w.varint(*group_id)?;
 			}
 		}
 		Ok(())
@@ -70,7 +70,7 @@ impl Encode<Version> for FetchType<'_> {
 
 impl Decode<Version> for FetchType<'_> {
 	fn decode(buf: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
-		let fetch_type = buf.varint()?.into_inner();
+		let fetch_type = buf.varint()?;
 		Ok(match fetch_type {
 			0x1 => {
 				let namespace = decode_namespace(buf)?;
@@ -86,7 +86,7 @@ impl Decode<Version> for FetchType<'_> {
 			}
 			0x2 => {
 				let subscriber_request_id = RequestId::decode(buf, version)?;
-				let group_offset = buf.varint()?.into_inner();
+				let group_offset = buf.varint()?;
 				FetchType::RelativeJoining {
 					subscriber_request_id,
 					group_offset,
@@ -94,7 +94,7 @@ impl Decode<Version> for FetchType<'_> {
 			}
 			0x3 => {
 				let subscriber_request_id = RequestId::decode(buf, version)?;
-				let group_id = buf.varint()?.into_inner();
+				let group_id = buf.varint()?;
 				FetchType::AbsoluteJoining {
 					subscriber_request_id,
 					group_id,
@@ -119,7 +119,7 @@ impl Message for Fetch<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(0)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 
 		match version {
@@ -143,7 +143,7 @@ impl Message for Fetch<'_> {
 	fn decode_msg(buf: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(buf, version)?;
 		if version == Version::Draft17 {
-			let _required_request_id_delta = buf.varint()?.into_inner();
+			let _required_request_id_delta = buf.varint()?;
 		}
 
 		match version {
@@ -274,14 +274,14 @@ impl Message for FetchError<'_> {
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
 
 	fn decode_msg(buf: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(buf, version)?;
-		let error_code = buf.varint()?.into_inner();
+		let error_code = buf.varint()?;
 		let reason_phrase = Cow::Owned(buf.string()?);
 		Ok(Self {
 			request_id,
@@ -417,9 +417,9 @@ impl Encode<Version> for FetchObject {
 				if !Self::END_OF_RANGE.contains(reason) {
 					return Err(EncodeError::InvalidState);
 				}
-				w.varint(VarInt::from(*reason))?;
-				w.varint(VarInt::from(*group))?;
-				w.varint(VarInt::from(*object))?;
+				w.varint(*reason)?;
+				w.varint(*group)?;
+				w.varint(*object)?;
 			}
 			Self::Object {
 				subgroup,
@@ -447,16 +447,16 @@ impl Encode<Version> for FetchObject {
 				if properties.is_some() {
 					flags |= flag::PROPERTIES;
 				}
-				w.varint(VarInt::from(flags))?;
+				w.varint(flags)?;
 
 				if let Some(group) = group {
-					w.varint(VarInt::from(*group))?;
+					w.varint(*group)?;
 				}
 				if let FetchSubgroup::Explicit(subgroup) = subgroup {
-					w.varint(VarInt::from(*subgroup))?;
+					w.varint(*subgroup)?;
 				}
 				if let Some(object) = object {
-					w.varint(VarInt::from(*object))?;
+					w.varint(*object)?;
 				}
 				if let Some(priority) = priority {
 					w.u8(*priority);
@@ -472,7 +472,7 @@ impl Encode<Version> for FetchObject {
 
 impl Decode<Version> for FetchObject {
 	fn decode(buf: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		let flags = buf.varint()?.into_inner();
+		let flags = buf.varint()?;
 
 		// Anything at or above 128 is a named value rather than a set of flags, and only
 		// the three End of Range markers are defined.
@@ -482,14 +482,14 @@ impl Decode<Version> for FetchObject {
 			}
 			return Ok(Self::EndOfRange {
 				reason: flags,
-				group: buf.varint()?.into_inner(),
-				object: buf.varint()?.into_inner(),
+				group: buf.varint()?,
+				object: buf.varint()?,
 			});
 		}
 
 		// Wire order: Group ID Delta, Subgroup ID, Object ID Delta, Priority, Properties.
 		let group = match flags & flag::GROUP_ID != 0 {
-			true => Some(buf.varint()?.into_inner()),
+			true => Some(buf.varint()?),
 			false => None,
 		};
 
@@ -499,12 +499,12 @@ impl Decode<Version> for FetchObject {
 				0 => FetchSubgroup::Zero,
 				1 => FetchSubgroup::Prior,
 				2 => FetchSubgroup::PriorPlusOne,
-				_ => FetchSubgroup::Explicit(buf.varint()?.into_inner()),
+				_ => FetchSubgroup::Explicit(buf.varint()?),
 			},
 		};
 
 		let object = match flags & flag::OBJECT_ID != 0 {
-			true => Some(buf.varint()?.into_inner()),
+			true => Some(buf.varint()?),
 			false => None,
 		};
 

@@ -55,7 +55,7 @@ pub fn encode_namespace(w: &mut Encoder<'_>, namespace: &Path) -> Result<(), Enc
 		return Err(BoundsExceeded.into());
 	}
 
-	w.varint(VarInt::from(parts.len()))?;
+	w.varint(parts.len() as u64)?;
 	for part in parts {
 		w.string(&part)?;
 	}
@@ -64,7 +64,7 @@ pub fn encode_namespace(w: &mut Encoder<'_>, namespace: &Path) -> Result<(), Enc
 
 /// Helper function to decode namespace from tuple of strings
 pub fn decode_namespace(r: &mut Decoder<'_>) -> Result<Path<'static>, DecodeError> {
-	let count = r.varint()?.into_inner();
+	let count = r.varint()?;
 
 	if count == 0 {
 		return Ok(Path::from(String::new()));
@@ -109,7 +109,7 @@ mod tests {
 	fn encode_tuple(parts: &[&str]) -> Vec<u8> {
 		let mut buf = Vec::new();
 		let mut w = Encoder::new(&mut buf, FORM);
-		w.varint(parts.len().into()).unwrap();
+		w.varint(parts.len() as u64).unwrap();
 		for part in parts {
 			w.string(part).unwrap();
 		}

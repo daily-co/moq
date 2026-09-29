@@ -33,7 +33,7 @@ impl PublishNamespace<'_> {
 	pub fn decode_body(r: &mut Decoder<'_>, version: Version, negotiated: bool) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
 		if version == Version::Draft17 {
-			let _required_request_id_delta = r.varint()?.into_inner();
+			let _required_request_id_delta = r.varint()?;
 		}
 		let track_namespace = decode_namespace(r)?;
 		let cluster = decode_cluster_params(r, version, negotiated)?;
@@ -52,7 +52,7 @@ impl Message for PublishNamespace<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(0)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		encode_cluster_params(w, version, self.cluster.as_ref())
@@ -106,7 +106,7 @@ impl Message for PublishNamespaceUpdate {
 			Version::Draft14 | Version::Draft15 | Version::Draft16 => return Err(EncodeError::Version),
 			Version::Draft17 => {
 				self.request_id.encode(w, version)?;
-				w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+				w.varint(0)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 			}
 			_ => self.request_id.encode(w, version)?,
 		}
@@ -122,7 +122,7 @@ impl Message for PublishNamespaceUpdate {
 			Version::Draft14 | Version::Draft15 | Version::Draft16 => return Err(DecodeError::Version),
 			Version::Draft17 => {
 				let request_id = RequestId::decode(r, version)?;
-				let _required_request_id_delta = r.varint()?.into_inner();
+				let _required_request_id_delta = r.varint()?;
 				request_id
 			}
 			_ => RequestId::decode(r, version)?,
@@ -214,14 +214,14 @@ impl Message for PublishNamespaceError<'_> {
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
 
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
-		let error_code = r.varint()?.into_inner();
+		let error_code = r.varint()?;
 		let reason_phrase = Cow::Owned(r.string()?);
 
 		Ok(Self {
@@ -306,7 +306,7 @@ impl Message for PublishNamespaceCancel<'_> {
 				return Err(EncodeError::Version);
 			}
 		}
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
@@ -325,7 +325,7 @@ impl Message for PublishNamespaceCancel<'_> {
 				return Err(DecodeError::Version);
 			}
 		};
-		let error_code = r.varint()?.into_inner();
+		let error_code = r.varint()?;
 		let reason_phrase = Cow::Owned(r.string()?);
 		Ok(Self {
 			track_namespace,

@@ -1,7 +1,7 @@
 use crate::origin;
 use crate::{
 	Error, Hop, SessionError, StreamError,
-	coding::{Decode, DecodeError, Encode, Reader, Stream, VarInt, Writer},
+	coding::{Decode, DecodeError, Encode, Reader, Stream, Writer},
 	ietf::{self, FetchHeader, RequestId},
 	setup,
 	util::{MaybeBoxedExt, MaybeSendBox, TaskSet, err_only},
@@ -474,7 +474,7 @@ pub async fn accept_setup<S: crate::transport::poll::Session>(
 		let recv = session.accept_uni().await.map_err(Error::from_transport)?;
 		let mut reader: Reader<S::RecvStream, crate::Version> = Reader::new(recv, outer_version);
 
-		if reader.decode_peek::<VarInt>().await?.into_inner() != setup::SETUP_V17 {
+		if reader.varint_peek().await? != setup::SETUP_V17 {
 			// Not the SETUP (group data this early is unexpected). Reject and keep waiting.
 			reader.abort(&Error::UnexpectedStream);
 			continue;
@@ -630,11 +630,11 @@ where
 		let kind = match tasks
 			.drive(|waiter| {
 				let mut cx = waiter.context();
-				reader.poll_decode_peek::<VarInt>(&mut cx)
+				reader.poll_varint_peek(&mut cx)
 			})
 			.await
 		{
-			Ok(kind) => kind.into_inner(),
+			Ok(kind) => kind,
 			Err(err @ (Error::Cancel | Error::Stream(_) | Error::Remote(_) | Error::Decode(DecodeError::Short))) => {
 				tracing::debug!(%err, "dropping uni stream that died before its type");
 				continue;
@@ -715,7 +715,7 @@ async fn run_uni_group<S>(
 where
 	S: crate::transport::poll::Boxable,
 {
-	let kind = stream.decode_peek::<VarInt>().await?.into_inner();
+	let kind = stream.varint_peek().await?;
 
 	// SUBGROUP_HEADER type bytes match the form 0b0XX1XXXX (spec §11.4.2):
 	// draft-14-17 use 0x10-0x1D and 0x30-0x3D, draft-18 adds 0x40 (FIRST_OBJECT)
@@ -772,9 +772,7 @@ where
 				let mut cx = waiter.context();
 				let id = match hdr_id {
 					Some(id) => id,
-					None => {
-						*hdr_id.insert(std::task::ready!(stream.reader.poll_decode::<VarInt>(&mut cx))?.into_inner())
-					}
+					None => *hdr_id.insert(std::task::ready!(stream.reader.poll_varint(&mut cx))?),
 				};
 				let body = std::task::ready!(stream.reader.poll_decode::<ietf::Body>(&mut cx))?;
 				std::task::Poll::Ready(Ok::<_, Error>((id, body)))
@@ -821,8 +819,8 @@ async fn run_goaway<R: crate::transport::poll::RecvStream>(
 	version: Version,
 	goaway: crate::goaway::Protocol,
 ) -> Result<(), Error> {
-	let id = match reader.decode_maybe::<VarInt>().await? {
-		Some(id) => id.into_inner(),
+	let id = match reader.varint_maybe().await? {
+		Some(id) => id,
 		None => return Ok(()),
 	};
 
@@ -854,8 +852,8 @@ async fn run_goaway<R: crate::transport::poll::RecvStream>(
 	// control stream enforces, so close over it here too rather than logging;
 	// anything else is merely unexpected and discarded.
 	loop {
-		let id = match reader.decode_maybe::<VarInt>().await? {
-			Some(id) => id.into_inner(),
+		let id = match reader.varint_maybe().await? {
+			Some(id) => id,
 			None => return Ok(()),
 		};
 		let body: ietf::Body = reader.decode().await?;
@@ -892,7 +890,7 @@ mod tests {
 		let log = crate::lite::test_transport::Log::default();
 		let mut writer = crate::coding::Writer::new(crate::lite::test_transport::SinkSend::new(log.clone()), version);
 
-		writer.encode(&VarInt::from(ietf::RequestOk::ID)).await.unwrap();
+		writer.varint(ietf::RequestOk::ID).await.unwrap();
 		writer
 			.encode(&ietf::RequestOk {
 				request_id: None,
@@ -900,7 +898,7 @@ mod tests {
 			})
 			.await
 			.unwrap();
-		writer.encode(&VarInt::from(ietf::Namespace::ID)).await.unwrap();
+		writer.varint(ietf::Namespace::ID).await.unwrap();
 		writer
 			.encode(&ietf::Namespace {
 				suffix: crate::Path::new("cam"),
@@ -1278,7 +1276,7 @@ mod tests {
 		let log = crate::lite::test_transport::Log::default();
 		let mut writer = crate::coding::Writer::new(crate::lite::test_transport::SinkSend::new(log.clone()), version);
 
-		writer.encode(&VarInt::from(ietf::PublishNamespace::ID)).await.unwrap();
+		writer.varint(ietf::PublishNamespace::ID).await.unwrap();
 		writer
 			.encode(&ietf::PublishNamespace {
 				request_id: RequestId(1),
@@ -1289,10 +1287,7 @@ mod tests {
 			.unwrap();
 
 		for _ in 0..2 {
-			writer
-				.encode(&VarInt::from(ietf::PublishNamespaceDone::ID))
-				.await
-				.unwrap();
+			writer.varint(ietf::PublishNamespaceDone::ID).await.unwrap();
 			writer
 				.encode(&ietf::PublishNamespaceDone {
 					track_namespace: crate::Path::new("room/host"),
@@ -1315,10 +1310,7 @@ mod tests {
 			Version::Draft14,
 		);
 
-		writer
-			.encode(&VarInt::from(ietf::PublishNamespaceOk::ID))
-			.await
-			.unwrap();
+		writer.varint(ietf::PublishNamespaceOk::ID).await.unwrap();
 		writer.encode(&ietf::PublishNamespaceOk { request_id }).await.unwrap();
 
 		let writes = log.writes.lock().unwrap();

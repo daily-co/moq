@@ -31,7 +31,7 @@ impl Message for TrackStatus<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0
+			w.varint(0)?; // required_request_id_delta = 0
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		w.string(&self.track_name)?;
@@ -54,7 +54,7 @@ impl Message for TrackStatus<'_> {
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
 		if version == Version::Draft17 {
-			let _required_request_id_delta = r.varint()?.into_inner();
+			let _required_request_id_delta = r.varint()?;
 		}
 		let track_namespace = decode_namespace(r)?;
 		let track_name = Cow::Owned(r.string()?);
@@ -64,7 +64,7 @@ impl Message for TrackStatus<'_> {
 				let _subscriber_priority = r.u8()?;
 				let _group_order = GroupOrder::decode(r, version)?;
 				let _forward = r.bool()?;
-				let _filter_type = r.varint()?.into_inner();
+				let _filter_type = r.varint()?;
 				let _params = Parameters::decode(r, version)?;
 			}
 			_ => {
@@ -91,14 +91,14 @@ pub enum TrackStatusCode {
 
 impl Encode<Version> for TrackStatusCode {
 	fn encode(&self, w: &mut Encoder<'_>, _: Version) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(u64::from(*self)))?;
+		w.varint(u64::from(*self))?;
 		Ok(())
 	}
 }
 
 impl Decode<Version> for TrackStatusCode {
 	fn decode(r: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		Self::try_from(r.varint()?.into_inner()).map_err(|_| DecodeError::InvalidValue)
+		Self::try_from(r.varint()?).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 

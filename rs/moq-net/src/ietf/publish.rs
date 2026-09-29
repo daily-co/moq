@@ -108,7 +108,7 @@ use std::borrow::Cow;
 
 use crate::{
 	Path,
-	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 	ietf::{
 		Filter, GroupOrder, Location, Parameters, Properties, RequestId,
 		namespace::{decode_namespace, encode_namespace},
@@ -198,8 +198,8 @@ impl Message for PublishDone<'_> {
 		} else {
 			assert!(self.request_id.is_none(), "request_id must be None for draft17+");
 		}
-		w.varint(VarInt::from(self.status_code))?;
-		w.varint(VarInt::from(self.stream_count))?;
+		w.varint(self.status_code)?;
+		w.varint(self.stream_count)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
@@ -210,8 +210,8 @@ impl Message for PublishDone<'_> {
 		} else {
 			None
 		};
-		let status_code = r.varint()?.into_inner();
-		let stream_count = r.varint()?.into_inner();
+		let status_code = r.varint()?;
+		let stream_count = r.varint()?;
 		let reason_phrase = Cow::Owned(r.string()?);
 
 		Ok(Self {
@@ -243,11 +243,11 @@ impl Message for Publish<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0
+			w.varint(0)?; // required_request_id_delta = 0
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		w.string(&self.track_name)?;
-		w.varint(VarInt::from(self.track_alias))?;
+		w.varint(self.track_alias)?;
 
 		match version {
 			Version::Draft14 => {
@@ -293,11 +293,11 @@ impl Message for Publish<'_> {
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
 		if version == Version::Draft17 {
-			let _required_request_id_delta = r.varint()?.into_inner();
+			let _required_request_id_delta = r.varint()?;
 		}
 		let track_namespace = decode_namespace(r)?;
 		let track_name = Cow::Owned(r.string()?);
-		let track_alias = r.varint()?.into_inner();
+		let track_alias = r.varint()?;
 
 		match version {
 			Version::Draft14 => {
@@ -485,14 +485,14 @@ impl Message for PublishError<'_> {
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
 
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
-		let error_code = r.varint()?.into_inner();
+		let error_code = r.varint()?;
 		let reason_phrase = Cow::Owned(r.string()?);
 		Ok(Self {
 			request_id,
@@ -517,7 +517,7 @@ mod tests {
 		RequestId(1).encode(w, version)?;
 		super::super::namespace::encode_namespace(w, &crate::Path::new("broadcast"))?;
 		w.string("video")?;
-		w.varint(1u64.into())?; // track alias
+		w.varint(1u64)?; // track alias
 
 		// SUBSCRIBER_PRIORITY then LOCATION_FILTER, delta encoded from 0.
 		encode_params!(w, version,
@@ -540,7 +540,7 @@ mod tests {
 		RequestId(1).encode(w, version)?;
 		super::super::namespace::encode_namespace(w, &crate::Path::new("broadcast"))?;
 		w.string("video")?;
-		w.varint(1u64.into())?;
+		w.varint(1u64)?;
 		encode_params!(w, version, 0x20 => 128u8);
 		Properties::default().encode(w, version)?;
 

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::{
 	Path,
-	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 };
 
 use super::{Message, Version};
@@ -45,7 +45,7 @@ impl Version {
 
 impl Message for Subscribe<'_> {
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
-		let id = r.varint()?.into_inner();
+		let id = r.varint()?;
 		let broadcast = Path::decode(r, version)?;
 		let track = Cow::Owned(r.string()?);
 		let priority = r.u8()?;
@@ -54,7 +54,7 @@ impl Message for Subscribe<'_> {
 			Version::Lite01 | Version::Lite02 => (std::time::Duration::ZERO, None, None),
 			_ => {
 				skip_group_order(r, version)?;
-				let max_age = std::time::Duration::from_millis(r.varint()?.into_inner());
+				let max_age = std::time::Duration::from_millis(r.varint()?);
 				let start_group = decode_start_group(r, version)?;
 				let end_group = r.varint_opt()?;
 				(max_age, start_group, end_group)
@@ -78,7 +78,7 @@ impl Message for Subscribe<'_> {
 	}
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(self.id))?;
+		w.varint(self.id)?;
 		self.broadcast.encode(w, version)?;
 		w.string(&self.track)?;
 		w.u8(self.priority);
@@ -87,7 +87,7 @@ impl Message for Subscribe<'_> {
 			Version::Lite01 | Version::Lite02 => {}
 			_ => {
 				pad_group_order(w, version)?;
-				w.varint(VarInt::try_from(self.max_age.as_millis())?)?;
+				w.varint(u64::try_from(self.max_age.as_millis()).map_err(|_| EncodeError::BoundsExceeded)?)?;
 				encode_start_group(w, version, self.start_group)?;
 				w.varint_opt(self.end_group)?;
 			}
@@ -133,7 +133,7 @@ pub(super) fn pad_group_order(w: &mut Encoder<'_>, version: Version) -> Result<(
 /// are known.
 fn decode_start_group(r: &mut Decoder<'_>, version: Version) -> Result<Option<u64>, DecodeError> {
 	if version.resolves_start() {
-		return Ok(Some(r.varint()?.into_inner()));
+		return Ok(Some(r.varint()?));
 	}
 	r.varint_opt()
 }
@@ -157,7 +157,7 @@ fn canonical_start_group(version: Version, start_group: Option<u64>, start_frame
 /// beginning", which is not what a vacuous floor asks for.
 fn encode_start_group(w: &mut Encoder<'_>, version: Version, start_group: Option<u64>) -> Result<(), EncodeError> {
 	if version.resolves_start() {
-		return w.varint(VarInt::from(start_group.unwrap_or(0)));
+		return w.varint(start_group.unwrap_or(0));
 	}
 	w.varint_opt(start_group.filter(|&group| group > 0))
 }
@@ -178,7 +178,7 @@ fn decode_frame_bounds(
 		return Ok((0, None));
 	}
 
-	let start_frame = r.varint()?.into_inner();
+	let start_frame = r.varint()?;
 	let end_frame = r.varint_opt()?;
 
 	if (start_frame != 0 && start_group.is_none()) || (end_frame.is_some() && end_group.is_none()) {
@@ -210,7 +210,7 @@ fn encode_frame_bounds(
 		return Ok(());
 	}
 
-	w.varint(VarInt::from(start_frame))?;
+	w.varint(start_frame)?;
 	w.varint_opt(end_frame)
 }
 
@@ -239,7 +239,7 @@ impl Message for SubscribeOk {
 			_ => {
 				w.u8(self.priority);
 				pad_group_order(w, version)?;
-				w.varint(VarInt::try_from(self.max_age.as_millis())?)?;
+				w.varint(u64::try_from(self.max_age.as_millis()).map_err(|_| EncodeError::BoundsExceeded)?)?;
 				w.varint_opt(self.start_group)?;
 				w.varint_opt(self.end_group)?;
 			}
@@ -265,7 +265,7 @@ impl Message for SubscribeOk {
 			_ => {
 				let priority = r.u8()?;
 				skip_group_order(r, version)?;
-				let max_age = std::time::Duration::from_millis(r.varint()?.into_inner());
+				let max_age = std::time::Duration::from_millis(r.varint()?);
 				let start_group = r.varint_opt()?;
 				let end_group = r.varint_opt()?;
 
@@ -298,16 +298,14 @@ impl Message for SubscribeStart {
 		if !version.has_track_stream() {
 			return Err(DecodeError::Version);
 		}
-		Ok(Self {
-			group: r.varint()?.into_inner(),
-		})
+		Ok(Self { group: r.varint()? })
 	}
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		if !version.has_track_stream() {
 			return Err(EncodeError::Version);
 		}
-		w.varint(VarInt::from(self.group))
+		w.varint(self.group)
 	}
 }
 
@@ -328,9 +326,9 @@ impl Message for SubscribeEnd {
 		if !version.has_track_stream() {
 			return Err(DecodeError::Version);
 		}
-		let group = r.varint()?.into_inner();
+		let group = r.varint()?;
 		let streams = match version.has_stream_count() {
-			true => r.varint()?.into_inner(),
+			true => r.varint()?,
 			false => 0,
 		};
 		Ok(Self { group, streams })
@@ -340,9 +338,9 @@ impl Message for SubscribeEnd {
 		if !version.has_track_stream() {
 			return Err(EncodeError::Version);
 		}
-		w.varint(VarInt::from(self.group))?;
+		w.varint(self.group)?;
 		if version.has_stream_count() {
-			w.varint(VarInt::from(self.streams))?;
+			w.varint(self.streams)?;
 		}
 		Ok(())
 	}
@@ -375,9 +373,9 @@ impl Message for SubscribeUpdate {
 
 		let priority = r.u8()?;
 		skip_group_order(r, version)?;
-		let max_age = std::time::Duration::from_millis(r.varint()?.into_inner());
+		let max_age = std::time::Duration::from_millis(r.varint()?);
 		let start_group = decode_start_group(r, version)?;
-		let end_group = match r.varint()?.into_inner() {
+		let end_group = match r.varint()? {
 			0 => None,
 			group => Some(group - 1),
 		};
@@ -405,7 +403,7 @@ impl Message for SubscribeUpdate {
 
 		w.u8(self.priority);
 		pad_group_order(w, version)?;
-		w.varint(VarInt::try_from(self.max_age.as_millis())?)?;
+		w.varint(u64::try_from(self.max_age.as_millis()).map_err(|_| EncodeError::BoundsExceeded)?)?;
 
 		encode_start_group(w, version, self.start_group)?;
 
@@ -454,9 +452,9 @@ impl Message for SubscribeDrop {
 		}
 
 		Ok(Self {
-			start: r.varint()?.into_inner(),
-			end: r.varint()?.into_inner(),
-			error: r.varint()?.into_inner(),
+			start: r.varint()?,
+			end: r.varint()?,
+			error: r.varint()?,
 		})
 	}
 
@@ -469,9 +467,9 @@ impl Message for SubscribeDrop {
 			_ => {}
 		}
 
-		w.varint(VarInt::from(self.start))?;
-		w.varint(VarInt::from(self.end))?;
-		w.varint(VarInt::from(self.error))?;
+		w.varint(self.start)?;
+		w.varint(self.end)?;
+		w.varint(self.error)?;
 
 		Ok(())
 	}
@@ -495,7 +493,7 @@ pub enum SubscribeResponse {
 
 /// Write a `type` varint followed by the size-prefixed message body.
 fn encode_typed<M: Message>(w: &mut Encoder<'_>, typ: u64, msg: &M, version: Version) -> Result<(), EncodeError> {
-	w.varint(VarInt::from(typ))?;
+	w.varint(typ)?;
 	msg.encode(w, version)
 }
 
@@ -529,7 +527,7 @@ impl Decode<Version> for SubscribeResponse {
 		match version {
 			Version::Lite01 | Version::Lite02 => Ok(Self::Ok(SubscribeOk::decode(buf, version)?)),
 			Version::Lite03 | Version::Lite04 => {
-				let typ = buf.varint()?.into_inner();
+				let typ = buf.varint()?;
 				match typ {
 					0 => Ok(Self::Ok(SubscribeOk::decode(buf, version)?)),
 					1 => Ok(Self::Drop(SubscribeDrop::decode(buf, version)?)),
@@ -537,7 +535,7 @@ impl Decode<Version> for SubscribeResponse {
 				}
 			}
 			_ => {
-				let typ = buf.varint()?.into_inner();
+				let typ = buf.varint()?;
 				match typ {
 					0 => Ok(Self::Start(SubscribeStart::decode(buf, version)?)),
 					1 => Ok(Self::End(SubscribeEnd::decode(buf, version)?)),

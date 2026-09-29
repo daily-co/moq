@@ -8,7 +8,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::{
 	Error, PathOwned,
-	coding::{Decode, Decoder, Encoder, Reader, VarInt, Writer},
+	coding::{Decode, Decoder, Encoder, Reader, Writer},
 	ietf::{self, RequestId},
 };
 
@@ -291,7 +291,7 @@ impl OutgoingRegistration {
 		let request_id = RequestId::decode(&mut body, self.version)?;
 
 		// For PublishNamespace, also extract the namespace for reverse lookup.
-		if type_id.into_inner() == ietf::PublishNamespace::ID {
+		if type_id == ietf::PublishNamespace::ID {
 			if self.version == Version::Draft17 {
 				// v17 has required_request_id_delta after request_id
 				let _ = body.varint();
@@ -784,7 +784,7 @@ impl<S: crate::transport::poll::Session> ControlStreamAdapter<S> {
 		let mut raw = Vec::new();
 		let mut w = Encoder::new(&mut raw, version.into());
 		if let Err(err) = w
-			.varint(crate::ietf::GoAway::ID.into())
+			.varint(crate::ietf::GoAway::ID)
 			.and_then(|()| msg.encode(&mut w, version))
 		{
 			tracing::warn!(%err, "failed to encode goaway");
@@ -812,8 +812,8 @@ impl<S: crate::transport::poll::Session> ControlStreamAdapter<S> {
 		goaway: crate::goaway::Protocol,
 	) -> Result<(), Error> {
 		loop {
-			let type_id = match reader.decode_maybe::<VarInt>().await? {
-				Some(id) => id.into_inner(),
+			let type_id = match reader.varint_maybe().await? {
+				Some(id) => id,
 				None => return Ok(()),
 			};
 
@@ -1159,7 +1159,7 @@ enum Route {
 fn encode_raw(type_id: u64, body: &Bytes, version: Version) -> Bytes {
 	let mut buf = Vec::new();
 	let mut w = Encoder::new(&mut buf, version.into());
-	w.varint(type_id.into()).expect("type_id was read from the same wire");
+	w.varint(type_id).expect("type_id was read from the same wire");
 	w.u16(u16::try_from(body.len()).expect("body was read with a u16 size"));
 	w.slice(body);
 	buf.into()
@@ -1310,7 +1310,7 @@ mod tests {
 
 		// Decode the raw bytes
 		let mut r = Decoder::new(&raw, version.into());
-		assert_eq!(r.varint().unwrap().into_inner(), 0x03);
+		assert_eq!(r.varint().unwrap(), 0x03);
 		assert_eq!(r.u16().unwrap(), 5);
 		assert_eq!(r.rest(), b"hello");
 	}

@@ -21,13 +21,13 @@ impl From<Version> for u64 {
 impl<V> Decode<V> for Version {
 	/// Decode the version number.
 	fn decode(r: &mut Decoder<'_>, _: V) -> Result<Self, DecodeError> {
-		Ok(Self(r.varint()?.into_inner()))
+		Ok(Self(r.varint()?))
 	}
 }
 
 impl<V> Encode<V> for Version {
 	fn encode(&self, w: &mut Encoder<'_>, _: V) -> Result<(), EncodeError> {
-		w.varint(self.0.into())?;
+		w.varint(self.0)?;
 		Ok(())
 	}
 }
@@ -45,7 +45,7 @@ pub struct Versions(Vec<Version>);
 impl<V: Copy> Decode<V> for Versions {
 	/// Decode the version list.
 	fn decode(r: &mut Decoder<'_>, version: V) -> Result<Self, DecodeError> {
-		let count = r.varint()?.into_inner();
+		let count = r.varint()?;
 		let mut vs = Vec::new();
 
 		for _ in 0..count {
@@ -60,7 +60,7 @@ impl<V: Copy> Decode<V> for Versions {
 impl<V: Copy> Encode<V> for Versions {
 	/// Encode the version list.
 	fn encode(&self, w: &mut Encoder<'_>, version: V) -> Result<(), EncodeError> {
-		w.varint(self.0.len().into())?;
+		w.varint(self.0.len() as u64)?;
 
 		for v in &self.0 {
 			v.encode(w, version)?;

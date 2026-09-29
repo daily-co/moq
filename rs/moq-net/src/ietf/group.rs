@@ -1,4 +1,4 @@
-use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt};
+use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 use crate::{Timescale, Timestamp};
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -37,7 +37,7 @@ pub fn encode_object_time(
 ) -> Result<(), EncodeError> {
 	let timestamp = timestamp.convert(timescale).map_err(|_| EncodeError::BoundsExceeded)?;
 	encode_object_property_type(w, PROP_TIMESTAMP, 0, version)?;
-	w.varint(VarInt::from(timestamp.value()))?;
+	w.varint(timestamp.value())?;
 	Ok(())
 }
 
@@ -46,7 +46,7 @@ fn encode_object_property_type(w: &mut Encoder<'_>, kind: u64, prev: u64, versio
 		Version::Draft14 | Version::Draft15 => kind,
 		_ => kind.checked_sub(prev).ok_or(EncodeError::BoundsExceeded)?,
 	};
-	w.varint(VarInt::from(encoded))
+	w.varint(encoded)
 }
 
 /// Decode the Timestamp (0x10) Object Property from an object's extension block,
@@ -66,7 +66,7 @@ pub fn decode_object_time(
 	let mut first = true;
 
 	while !r.is_empty() {
-		let step = r.varint()?.into_inner();
+		let step = r.varint()?;
 		let abs = match version {
 			Version::Draft14 | Version::Draft15 => step,
 			_ if first => step,
@@ -77,7 +77,7 @@ pub fn decode_object_time(
 
 		if abs % 2 == 0 {
 			// Even type: a single varint value.
-			let value = r.varint()?.into_inner();
+			let value = r.varint()?;
 			match abs {
 				PROP_TIMESTAMP | PROP_TIMESTAMP_DRAFT03 => timestamp = Some(value),
 				PROP_TIMESCALE => override_scale = Some(value),
@@ -85,7 +85,7 @@ pub fn decode_object_time(
 			}
 		} else {
 			// Odd type: length-prefixed bytes we don't care about.
-			let len = usize::try_from(r.varint()?)?;
+			let len = usize::try_from(r.varint()?).map_err(|_| DecodeError::BoundsExceeded)?;
 			r.slice(len)?;
 		}
 	}
@@ -287,16 +287,16 @@ pub struct GroupHeader {
 impl Encode<Version> for GroupHeader {
 	fn encode(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		tracing::trace!(?self, "encoding group header");
-		w.varint(VarInt::from(self.flags.encode(version)?))?;
-		w.varint(VarInt::from(self.track_alias))?;
-		w.varint(VarInt::from(self.group_id))?;
+		w.varint(self.flags.encode(version)?)?;
+		w.varint(self.track_alias)?;
+		w.varint(self.group_id)?;
 
 		if !self.flags.has_subgroup && self.sub_group_id != 0 {
 			return Err(EncodeError::InvalidState);
 		}
 
 		if self.flags.has_subgroup {
-			w.varint(VarInt::from(self.sub_group_id))?;
+			w.varint(self.sub_group_id)?;
 		}
 
 		// Publisher priority (only if has_priority flag is set)
@@ -309,12 +309,12 @@ impl Encode<Version> for GroupHeader {
 
 impl Decode<Version> for GroupHeader {
 	fn decode(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
-		let flags = GroupFlags::decode(r.varint()?.into_inner(), version)?;
-		let track_alias = r.varint()?.into_inner();
-		let group_id = r.varint()?.into_inner();
+		let flags = GroupFlags::decode(r.varint()?, version)?;
+		let track_alias = r.varint()?;
+		let group_id = r.varint()?;
 
 		let sub_group_id = match flags.has_subgroup {
-			true => r.varint()?.into_inner(),
+			true => r.varint()?,
 			false => 0,
 		};
 
@@ -351,7 +351,7 @@ mod tests {
 	/// Read `buf` back as a flat list of varints.
 	fn varints(buf: &[u8], version: Version) -> Vec<u64> {
 		let mut r = Decoder::new(buf, version.into());
-		std::iter::from_fn(|| (!r.is_empty()).then(|| r.varint().unwrap().into_inner())).collect()
+		std::iter::from_fn(|| (!r.is_empty()).then(|| r.varint().unwrap())).collect()
 	}
 
 	/// Write `values` as a flat list of varints.
@@ -359,7 +359,7 @@ mod tests {
 		let mut buf = Vec::new();
 		let mut w = Encoder::new(&mut buf, version.into());
 		for value in values {
-			w.varint((*value).into()).unwrap();
+			w.varint(*value).unwrap();
 		}
 		buf
 	}

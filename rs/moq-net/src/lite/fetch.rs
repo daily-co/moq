@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::{
 	Path,
-	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 };
 
 use super::{Message, Version};
@@ -35,10 +35,10 @@ impl Message for Fetch<'_> {
 		let broadcast = Path::decode(r, version)?;
 		let track = Cow::Owned(r.string()?);
 		let priority = r.u8()?;
-		let group = r.varint()?.into_inner();
+		let group = r.varint()?;
 
 		let (start_frame, end_frame) = match version.has_frame_bounds() {
-			true => (r.varint()?.into_inner(), r.varint_opt()?),
+			true => (r.varint()?, r.varint_opt()?),
 			false => (0, None),
 		};
 		// A range that ends before it starts can never be served.
@@ -67,10 +67,10 @@ impl Message for Fetch<'_> {
 		self.broadcast.encode(w, version)?;
 		w.string(&self.track)?;
 		w.u8(self.priority);
-		w.varint(VarInt::from(self.group))?;
+		w.varint(self.group)?;
 
 		if version.has_frame_bounds() {
-			w.varint(VarInt::from(self.start_frame))?;
+			w.varint(self.start_frame)?;
 			w.varint_opt(self.end_frame)?;
 		} else if self.start_frame != 0 || self.end_frame.is_some() {
 			// The peer would serve the whole group, including frames the caller excluded.

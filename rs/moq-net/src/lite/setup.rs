@@ -399,7 +399,7 @@ mod tests {
 		// Frame the body with the Message Length prefix `Setup::decode` expects.
 		let mut buf = Vec::new();
 		Encoder::new(&mut buf, version.into())
-			.varint(VarInt::from(body.len()))
+			.varint(body.len() as u64)
 			.unwrap();
 		buf.extend_from_slice(&body);
 		let mut slice = &buf[..];
@@ -443,7 +443,7 @@ mod tests {
 
 		let mut buf = Vec::new();
 		Encoder::new(&mut buf, Version::Lite05.into())
-			.varint(VarInt::from(body.len()))
+			.varint(body.len() as u64)
 			.unwrap();
 		buf.extend_from_slice(&body);
 
@@ -477,7 +477,7 @@ mod tests {
 
 			let mut buf = Vec::new();
 			Encoder::new(&mut buf, Version::Lite05.into())
-				.varint(VarInt::from(body.len()))
+				.varint(body.len() as u64)
 				.unwrap();
 			buf.extend_from_slice(&body);
 
@@ -512,7 +512,7 @@ mod tests {
 		// Wrap with the message size prefix the Message impl expects.
 		let mut buf = Vec::new();
 		Encoder::new(&mut buf, Version::Lite05.into())
-			.varint(VarInt::from(body.len()))
+			.varint(body.len() as u64)
 			.unwrap();
 		buf.extend_from_slice(&body);
 

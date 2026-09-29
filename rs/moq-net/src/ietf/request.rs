@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt};
+use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 
 use super::Message;
 use super::active_count::ACTIVE_COUNT_PARAM;
@@ -30,14 +30,14 @@ impl std::fmt::Display for RequestId {
 
 impl Encode<Version> for RequestId {
 	fn encode(&self, w: &mut Encoder<'_>, _: Version) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(self.0))?;
+		w.varint(self.0)?;
 		Ok(())
 	}
 }
 
 impl Decode<Version> for RequestId {
 	fn decode(r: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		let request_id = r.varint()?.into_inner();
+		let request_id = r.varint()?;
 		Ok(Self(request_id))
 	}
 }
@@ -144,9 +144,9 @@ impl Message for RequestError<'_> {
 		} else {
 			assert!(self.request_id.is_none(), "request_id must be None for draft17+");
 		}
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		if !matches!(version, Version::Draft14 | Version::Draft15) {
-			w.varint(VarInt::from(self.retry_interval))?;
+			w.varint(self.retry_interval)?;
 		}
 		w.string(&self.reason_phrase)?;
 		Ok(())
@@ -158,10 +158,10 @@ impl Message for RequestError<'_> {
 		} else {
 			None
 		};
-		let error_code = r.varint()?.into_inner();
+		let error_code = r.varint()?;
 		let retry_interval = match version {
 			Version::Draft14 | Version::Draft15 => 0,
-			_ => r.varint()?.into_inner(),
+			_ => r.varint()?,
 		};
 		let reason_phrase = Cow::Owned(r.string()?);
 		Ok(Self {

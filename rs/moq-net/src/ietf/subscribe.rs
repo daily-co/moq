@@ -61,7 +61,7 @@ impl Message for Subscribe<'_> {
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
 		if version == Version::Draft17 {
-			let _required_request_id_delta = r.varint()?.into_inner();
+			let _required_request_id_delta = r.varint()?;
 		}
 		let track_namespace = decode_namespace(r)?;
 		let track_name = Cow::Owned(r.string()?);
@@ -152,7 +152,7 @@ impl Message for Subscribe<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(0)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		w.string(&self.track_name)?;
@@ -218,11 +218,11 @@ impl Message for SubscribeOk {
 		} else {
 			assert!(self.request_id.is_none(), "request_id must be None for draft17+");
 		}
-		w.varint(VarInt::from(self.track_alias))?;
+		w.varint(self.track_alias)?;
 
 		match version {
 			Version::Draft14 => {
-				w.varint(VarInt::ZERO)?; // expires = 0
+				w.varint(0)?; // expires = 0
 				self.properties
 					.group_order
 					.unwrap_or(GroupOrder::Ascending)
@@ -263,7 +263,7 @@ impl Message for SubscribeOk {
 		} else {
 			None
 		};
-		let track_alias = r.varint()?.into_inner();
+		let track_alias = r.varint()?;
 		let mut properties = Properties::default();
 		let mut largest = None;
 
@@ -271,7 +271,7 @@ impl Message for SubscribeOk {
 			Version::Draft14 => {
 				// EXPIRES is when the publisher expects to end the subscription. That end
 				// arrives as PUBLISH_DONE regardless, so there is nothing to act on.
-				let _expires = r.varint()?.into_inner();
+				let _expires = r.varint()?;
 
 				properties.group_order = Some(GroupOrder::decode(r, version)?.any_to_descending());
 
@@ -333,14 +333,14 @@ impl Message for SubscribeError<'_> {
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
-		w.varint(VarInt::from(self.error_code))?;
+		w.varint(self.error_code)?;
 		w.string(&self.reason_phrase)?;
 		Ok(())
 	}
 
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let request_id = RequestId::decode(r, version)?;
-		let error_code = r.varint()?.into_inner();
+		let error_code = r.varint()?;
 		let reason_phrase = Cow::Owned(r.string()?);
 
 		Ok(Self {
@@ -393,7 +393,7 @@ impl Message for SubscribeUpdate {
 					.expect("subscription_request_id required for draft14")
 					.encode(w, version)?;
 				self.start_location.encode(w, version)?;
-				w.varint(VarInt::from(self.end_group))?;
+				w.varint(self.end_group)?;
 				w.u8(self.subscriber_priority);
 				w.bool(self.forward);
 				w.u8(0); // no parameters
@@ -417,7 +417,7 @@ impl Message for SubscribeUpdate {
 				// REQUEST_UPDATE
 				self.request_id.encode(w, version)?;
 				if matches!(version, Version::Draft17) {
-					w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+					w.varint(0)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 				}
 				encode_params!(w, version,
 					0x10 => self.forward,
@@ -436,7 +436,7 @@ impl Message for SubscribeUpdate {
 				let request_id = RequestId::decode(r, version)?;
 				let subscription_request_id = Some(RequestId::decode(r, version)?);
 				let start_location = Location::decode(r, version)?;
-				let end_group = r.varint()?.into_inner();
+				let end_group = r.varint()?;
 				let subscriber_priority = r.u8()?;
 				let forward = r.bool()?;
 				let _parameters = Parameters::decode(r, version)?;
@@ -477,7 +477,7 @@ impl Message for SubscribeUpdate {
 				// REQUEST_UPDATE
 				let request_id = RequestId::decode(r, version)?;
 				if matches!(version, Version::Draft17) {
-					let _required_request_id_delta = r.varint()?.into_inner();
+					let _required_request_id_delta = r.varint()?;
 				}
 				decode_params!(r, version,
 					0x02 => _object_delivery_timeout: Option<u64>,
@@ -577,7 +577,7 @@ mod tests {
 			let w = &mut Encoder::new(&mut buf, version.into());
 			RequestId(1).encode(w, version)?;
 			if version == Version::Draft17 {
-				w.varint(VarInt::ZERO)?; // required_request_id_delta
+				w.varint(0)?; // required_request_id_delta
 			}
 			encode_namespace(w, &Path::new("test"))?;
 			w.string("video")?;
@@ -634,8 +634,8 @@ mod tests {
 		r.string().unwrap();
 
 		// draft-14/15 write absolute keys, draft-16+ deltas, but the first is absolute either way.
-		let count = r.varint().unwrap().into_inner();
-		(count > 0).then(|| r.varint().unwrap().into_inner())
+		let count = r.varint().unwrap();
+		(count > 0).then(|| r.varint().unwrap())
 	}
 
 	/// We never ask a peer to hold a subscription open, so the parameter stays off our wire.
@@ -1280,9 +1280,7 @@ mod cache_duration_tests {
 					Version::Draft16 => vec![0, 0, 0, 4],
 					_ => vec![0, 0, 4],
 				};
-				Encoder::new(&mut payload, version.into())
-					.varint(VarInt::from(age))
-					.unwrap();
+				Encoder::new(&mut payload, version.into()).varint(age).unwrap();
 				let got = crate::coding::decode_buf(&mut payload.as_slice(), version, SubscribeOk::decode_msg).unwrap();
 				assert_eq!(
 					got.properties.max_cache_duration,

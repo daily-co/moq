@@ -29,11 +29,11 @@ impl Parameters {
 
 	/// Set a parameter to a varint value, replacing any existing entry.
 	///
-	/// Panics past [`VarInt::MAX_QUIC`], which no parameter we set comes near.
+	/// Panics past [`crate::coding::varint::MAX_QUIC`], which no parameter we set comes near.
 	pub fn set_varint(&mut self, id: u64, value: u64) {
 		let mut buf = Vec::new();
 		Encoder::new(&mut buf, Form::Quic)
-			.varint(value.into())
+			.varint(value)
 			.expect("parameter varint in range");
 		self.set_bytes(id, buf);
 	}
@@ -44,7 +44,7 @@ impl Parameters {
 			return Ok(None);
 		};
 		let mut r = Decoder::new(bytes, Form::Quic);
-		let value = r.varint()?.into_inner();
+		let value = r.varint()?;
 		if !r.is_empty() {
 			return Err(DecodeError::Long);
 		}
@@ -57,13 +57,13 @@ impl Decode<Version> for Parameters {
 		let mut params = Self::default();
 
 		// I hate this encoding so much; let me encode my role and get on with my life.
-		let count = r.varint()?.into_inner();
+		let count = r.varint()?;
 		if count > MAX_PARAMS {
 			return Err(DecodeError::TooMany);
 		}
 
 		for _ in 0..count {
-			let kind = r.varint()?.into_inner();
+			let kind = r.varint()?;
 			if params.get_bytes(kind).is_some() {
 				return Err(DecodeError::Duplicate);
 			}
@@ -81,10 +81,10 @@ impl Encode<Version> for Parameters {
 			return Err(EncodeError::TooMany);
 		}
 
-		w.varint(VarInt::from(self.0.len()))?;
+		w.varint(self.0.len() as u64)?;
 
 		for (kind, value) in &self.0 {
-			w.varint(VarInt::from(*kind))?;
+			w.varint(*kind)?;
 			w.bytes(value)?;
 		}
 

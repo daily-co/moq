@@ -1,6 +1,6 @@
 //! The Location Filter carried by SUBSCRIBE, PUBLISH and REQUEST_UPDATE.
 
-use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt};
+use crate::coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 
 use super::{Location, Param, Version};
 
@@ -86,21 +86,21 @@ impl Filter {
 			// that spelling normalizes to this one rather than colliding with NextObject.
 			Self::Unfiltered => {}
 			Self::NextObject => {
-				w.varint(VarInt::ZERO)?;
-				w.varint(VarInt::ZERO)?;
+				w.varint(0)?;
+				w.varint(0)?;
 			}
-			Self::Relative(groups) => w.varint(VarInt::from(groups))?,
+			Self::Relative(groups) => w.varint(groups)?,
 			Self::Absolute {
 				start: Location { group: 0, object: 0 },
 				end: None,
 			} => {}
 			Self::Absolute { start, end } => {
-				w.varint(VarInt::from(start.group))?;
-				w.varint(VarInt::from(start.object))?;
+				w.varint(start.group)?;
+				w.varint(start.object)?;
 				if let Some(end) = end {
-					w.varint(VarInt::from(Self::end_delta(start.group, end.group)?))?;
+					w.varint(Self::end_delta(start.group, end.group)?)?;
 					if let Some(object) = end.object {
-						w.varint(VarInt::from(object))?;
+						w.varint(object)?;
 					}
 				}
 			}
@@ -115,7 +115,7 @@ impl Filter {
 			if fields.len() == 4 {
 				return Err(DecodeError::TrailingBytes);
 			}
-			fields.push(r.varint()?.into_inner());
+			fields.push(r.varint()?);
 		}
 
 		Ok(match fields[..] {
@@ -150,16 +150,16 @@ impl Filter {
 		match *self {
 			// No tag means "everything", which only the absolute spelling can say.
 			Self::Unfiltered => {
-				w.varint(VarInt::from(tag::ABSOLUTE_START))?;
+				w.varint(tag::ABSOLUTE_START)?;
 				Location::default().encode(w, version)?;
 			}
-			Self::NextObject => w.varint(VarInt::from(tag::LARGEST_OBJECT))?,
-			Self::Relative(0) => w.varint(VarInt::from(tag::NEXT_GROUP))?,
+			Self::NextObject => w.varint(tag::LARGEST_OBJECT)?,
+			Self::Relative(0) => w.varint(tag::NEXT_GROUP)?,
 			// Only draft-20 can name a start further back than the next group without
 			// knowing Largest Object, so there is no honest tag to fall back to.
 			Self::Relative(_) => return Err(EncodeError::Unsupported),
 			Self::Absolute { start, end: None } => {
-				w.varint(VarInt::from(tag::ABSOLUTE_START))?;
+				w.varint(tag::ABSOLUTE_START)?;
 				start.encode(w, version)?;
 			}
 			// Draft-19's AbsoluteRange ends on a group, so an object-bounded range has no
@@ -169,9 +169,9 @@ impl Filter {
 				..
 			} => return Err(EncodeError::Unsupported),
 			Self::Absolute { start, end: Some(end) } => {
-				w.varint(VarInt::from(tag::ABSOLUTE_RANGE))?;
+				w.varint(tag::ABSOLUTE_RANGE)?;
 				start.encode(w, version)?;
-				w.varint(VarInt::from(Self::end_delta(start.group, end.group)?))?;
+				w.varint(Self::end_delta(start.group, end.group)?)?;
 			}
 		}
 		Ok(())
@@ -179,7 +179,7 @@ impl Filter {
 
 	/// Decode the draft-19 and earlier tag form.
 	fn decode_tag(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
-		Ok(match r.varint()?.into_inner() {
+		Ok(match r.varint()? {
 			tag::NEXT_GROUP => Self::Relative(0),
 			tag::LARGEST_OBJECT => Self::NextObject,
 			tag::ABSOLUTE_START => Self::Absolute {
@@ -188,7 +188,7 @@ impl Filter {
 			},
 			tag::ABSOLUTE_RANGE => {
 				let start = Location::decode(r, version)?;
-				let delta = r.varint()?.into_inner();
+				let delta = r.varint()?;
 				Self::Absolute {
 					start,
 					end: Some(EndLocation {
@@ -555,11 +555,11 @@ impl Param for Fill {
 		// An omitted filter inherits the subscription's, so the scope is empty. An explicit
 		// Unfiltered still encodes, as a zero-length filter meaning the whole track.
 		match self.filter {
-			None => inner.varint(VarInt::ZERO)?,
+			None => inner.varint(0)?,
 			Some(filter) => {
-				inner.varint(VarInt::from(1u64))?;
+				inner.varint(1u64)?;
 				// The first type in a scope is not delta encoded, so this is the raw id.
-				inner.varint(VarInt::from(Self::LOCATION_FILTER))?;
+				inner.varint(Self::LOCATION_FILTER)?;
 				filter.param_encode(&mut inner, version)?;
 			}
 		}
@@ -570,7 +570,7 @@ impl Param for Fill {
 	fn param_decode(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		let mut buf = Decoder::new(r.bytes()?, r.form());
 
-		let count = buf.varint()?.into_inner();
+		let count = buf.varint()?;
 		if count > 64 {
 			return Err(DecodeError::TooMany);
 		}
@@ -579,7 +579,7 @@ impl Param for Fill {
 		let mut range_filters = false;
 		let mut prev = 0u64;
 		for i in 0..count {
-			let delta = buf.varint()?.into_inner();
+			let delta = buf.varint()?;
 			let key = if i == 0 {
 				delta
 			} else {
@@ -686,11 +686,9 @@ mod fill_tests {
 	#[test]
 	fn rejects_a_disallowed_parameter() {
 		let mut value = Vec::new();
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(1u64)).unwrap();
-		Encoder::new(&mut value, NEW.into())
-			.varint(VarInt::from(0x10u64))
-			.unwrap(); // FORWARD, not allowed in a fill
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::ZERO).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(1u64).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(0x10u64).unwrap(); // FORWARD, not allowed in a fill
+		Encoder::new(&mut value, NEW.into()).varint(0).unwrap();
 
 		let mut buf = Vec::new();
 		Encoder::new(&mut buf, NEW.into()).bytes(&value).unwrap();
@@ -703,12 +701,10 @@ mod fill_tests {
 	#[test]
 	fn skips_a_uint8_whose_value_has_a_leading_one() {
 		let mut value = Vec::new();
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(2u64)).unwrap();
-		Encoder::new(&mut value, NEW.into())
-			.varint(VarInt::from(0x20u64))
-			.unwrap(); // SUBSCRIBER_PRIORITY
+		Encoder::new(&mut value, NEW.into()).varint(2u64).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(0x20u64).unwrap(); // SUBSCRIBER_PRIORITY
 		Encoder::new(&mut value, NEW.into()).u8(0x80u8); // a raw byte, not a varint
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(1u64)).unwrap(); // delta to 0x21
+		Encoder::new(&mut value, NEW.into()).varint(1u64).unwrap(); // delta to 0x21
 		Filter::Relative(1)
 			.param_encode(&mut Encoder::new(&mut value, NEW.into()), NEW)
 			.unwrap();
@@ -727,14 +723,12 @@ mod fill_tests {
 	#[test]
 	fn skips_a_length_prefixed_range_filter() {
 		let mut value = Vec::new();
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(2u64)).unwrap();
-		Encoder::new(&mut value, NEW.into())
-			.varint(VarInt::from(0x26u64))
-			.unwrap(); // OBJECTID_FILTER, length prefixed
+		Encoder::new(&mut value, NEW.into()).varint(2u64).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(0x26u64).unwrap(); // OBJECTID_FILTER, length prefixed
 		Encoder::new(&mut value, NEW.into())
 			.bytes(&[0xAAu8, 0xBB, 0xCC])
 			.unwrap();
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(1u64)).unwrap(); // delta to 0x27
+		Encoder::new(&mut value, NEW.into()).varint(1u64).unwrap(); // delta to 0x27
 		Encoder::new(&mut value, NEW.into()).bytes(&[0xDDu8]).unwrap(); // PRIORITY_FILTER
 
 		let mut buf = Vec::new();
@@ -748,14 +742,10 @@ mod fill_tests {
 	#[test]
 	fn skips_allowed_parameters_it_ignores() {
 		let mut value = Vec::new();
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(2u64)).unwrap();
-		Encoder::new(&mut value, NEW.into())
-			.varint(VarInt::from(0x20u64))
-			.unwrap(); // SUBSCRIBER_PRIORITY, even: one varint
-		Encoder::new(&mut value, NEW.into())
-			.varint(VarInt::from(42u64))
-			.unwrap();
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(1u64)).unwrap(); // delta to 0x21, odd: length prefixed
+		Encoder::new(&mut value, NEW.into()).varint(2u64).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(0x20u64).unwrap(); // SUBSCRIBER_PRIORITY, even: one varint
+		Encoder::new(&mut value, NEW.into()).varint(42u64).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(1u64).unwrap(); // delta to 0x21, odd: length prefixed
 		Filter::Relative(2)
 			.param_encode(&mut Encoder::new(&mut value, NEW.into()), NEW)
 			.unwrap();

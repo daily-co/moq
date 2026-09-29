@@ -1,7 +1,7 @@
 use std::string::FromUtf8Error;
 use thiserror::Error;
 
-use super::{BoundsExceeded, Form, VarInt};
+use super::{BoundsExceeded, Form, varint};
 
 /// Read the value from a [`Decoder`] using the given version.
 ///
@@ -173,21 +173,21 @@ impl<'a> Decoder<'a> {
 
 	/// Read a varint.
 	#[inline]
-	pub fn varint(&mut self) -> Result<VarInt, DecodeError> {
-		let (value, rest) = VarInt::read(self.buf, self.form)?;
+	pub fn varint(&mut self) -> Result<u64, DecodeError> {
+		let (value, rest) = varint::read(self.buf, self.form)?;
 		self.buf = rest;
 		Ok(value)
 	}
 
 	/// Read an optional varint: 0 is `None`, and `n + 1` is `Some(n)`.
 	pub fn varint_opt(&mut self) -> Result<Option<u64>, DecodeError> {
-		Ok(self.varint()?.into_inner().checked_sub(1))
+		Ok(self.varint()?.checked_sub(1))
 	}
 
 	/// Read a varint length, then that many raw bytes.
 	pub fn bytes(&mut self) -> Result<&'a [u8], DecodeError> {
 		let start = self.buf;
-		let len = usize::try_from(self.varint()?)?;
+		let len = usize::try_from(self.varint()?).map_err(|_| DecodeError::BoundsExceeded)?;
 		self.slice(len).inspect_err(|_| self.buf = start)
 	}
 

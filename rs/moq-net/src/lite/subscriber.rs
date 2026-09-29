@@ -889,10 +889,10 @@ impl FrameIngest {
 						continue;
 					};
 					// The timestamp delta doubles as the per-frame sentinel.
-					let Some(zz) = ready!(reader.poll_decode_maybe::<crate::coding::VarInt>(&mut cx))? else {
+					let Some(zz) = ready!(reader.poll_varint_maybe(&mut cx))? else {
 						return Poll::Ready(Ok(()));
 					};
-					let next: u64 = (self.prev_ts as i128 + zz.to_zigzag() as i128)
+					let next: u64 = (self.prev_ts as i128 + crate::coding::varint::unzigzag(zz) as i128)
 						.try_into()
 						.map_err(|_| Error::BoundsExceeded(crate::coding::BoundsExceeded))?;
 					self.prev_ts = next;
@@ -903,10 +903,10 @@ impl FrameIngest {
 					};
 				}
 				IngestPhase::Size { timestamp } => {
-					let Some(size) = ready!(reader.poll_decode_maybe::<crate::coding::VarInt>(&mut cx))? else {
+					let Some(size) = ready!(reader.poll_varint_maybe(&mut cx))? else {
 						return Poll::Ready(Ok(()));
 					};
-					let size = size.into_inner();
+
 					// `create_frame_owned` is the allocation chokepoint and rejects an
 					// oversized `size` before allocating, so no pre-check is needed. No
 					// wire timestamp (pre-lite-05) means local receive time.

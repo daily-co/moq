@@ -19,10 +19,10 @@ pub struct Group {
 
 impl Message for Group {
 	fn decode_msg(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
-		let subscribe = r.varint()?.into_inner();
-		let sequence = r.varint()?.into_inner();
+		let subscribe = r.varint()?;
+		let sequence = r.varint()?;
 		let frame_start = match version.has_frame_bounds() {
-			true => r.varint()?.into_inner(),
+			true => r.varint()?,
 			false => 0,
 		};
 
@@ -34,11 +34,11 @@ impl Message for Group {
 	}
 
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
-		w.varint(VarInt::from(self.subscribe))?;
-		w.varint(VarInt::from(self.sequence))?;
+		w.varint(self.subscribe)?;
+		w.varint(self.sequence)?;
 
 		if version.has_frame_bounds() {
-			w.varint(VarInt::from(self.frame_start))?;
+			w.varint(self.frame_start)?;
 		} else if self.frame_start != 0 {
 			// The peer would number the frames from 0 and silently misalign the group.
 			return Err(EncodeError::Version);

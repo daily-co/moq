@@ -5,7 +5,7 @@ mod decode;
 mod encode;
 mod reader;
 mod stream;
-mod varint;
+pub mod varint;
 mod version;
 mod writer;
 
@@ -14,7 +14,8 @@ pub use decode::*;
 pub use encode::*;
 pub use reader::*;
 pub use stream::*;
-pub use varint::*;
+pub use varint::BoundsExceeded;
+pub(crate) use varint::Form;
 pub use version::*;
 pub use writer::*;
 
@@ -36,5 +37,5 @@ pub(crate) fn decode_buf<B: bytes::Buf, V: Into<Form> + Copy, T>(
 /// Decode one varint from the front of a test buffer, advancing it past what was read.
 #[cfg(test)]
 pub(crate) fn decode_varint<B: bytes::Buf, V: Into<Form> + Copy>(buf: &mut B, version: V) -> Result<u64, DecodeError> {
-	decode_buf(buf, version, |r, _| Ok(r.varint()?.into_inner()))
+	decode_buf(buf, version, |r, _| r.varint())
 }

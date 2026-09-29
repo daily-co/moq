@@ -8,7 +8,7 @@ pub(super) const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 /// Read a lite message's varint size prefix, refusing one past [`MAX_MESSAGE_SIZE`].
 pub(super) fn decode_size(r: &mut Decoder<'_>) -> Result<usize, DecodeError> {
-	let size = r.varint()?.into_inner();
+	let size = r.varint()?;
 	match usize::try_from(size) {
 		Ok(size) if size <= MAX_MESSAGE_SIZE => Ok(size),
 		_ => Err(DecodeError::MessageTooLarge {
@@ -59,7 +59,6 @@ impl<T: Message> Decode<Version> for T {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::coding::VarInt;
 
 	#[derive(Debug)]
 	struct Empty;
@@ -74,11 +73,18 @@ mod tests {
 		}
 	}
 
+	/// A lite size prefix announcing `size` bytes, with no body behind it.
+	fn prefix(size: usize) -> Vec<u8> {
+		let mut wire = Vec::new();
+		Encoder::new(&mut wire, Version::Lite06.into())
+			.varint(size as u64)
+			.unwrap();
+		wire
+	}
+
 	#[test]
 	fn rejects_oversized_message_before_reading_the_body() {
-		let wire = VarInt::from(MAX_MESSAGE_SIZE + 1)
-			.encode_bytes(Version::Lite06)
-			.unwrap();
+		let wire = prefix(MAX_MESSAGE_SIZE + 1);
 
 		let err = Empty::decode_slice(&wire, Version::Lite06).unwrap_err();
 		assert!(matches!(
@@ -92,7 +98,7 @@ mod tests {
 
 	#[test]
 	fn accepts_message_at_the_limit() {
-		let wire = VarInt::from(MAX_MESSAGE_SIZE).encode_bytes(Version::Lite06).unwrap();
+		let wire = prefix(MAX_MESSAGE_SIZE);
 
 		let err = Empty::decode_slice(&wire, Version::Lite06).unwrap_err();
 		assert!(matches!(err, DecodeError::Short));

@@ -2,7 +2,7 @@ use std::{borrow::Cow, time::Duration};
 
 use crate::{
 	Path, Timescale,
-	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder, VarInt},
+	coding::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder},
 };
 
 use super::{Message, Version};
@@ -68,12 +68,12 @@ impl Message for TrackInfo {
 
 		let priority = r.u8()?;
 		super::subscribe::skip_group_order(r, version)?;
-		let encoded = r.varint()?.into_inner();
+		let encoded = r.varint()?;
 		let max_age = match version {
 			Version::Lite05 | Version::Lite06 => (encoded < LEGACY_UNLIMITED).then(|| Duration::from_millis(encoded)),
 			_ => encoded.checked_sub(1).map(Duration::from_millis),
 		};
-		let timescale = Timescale::new(r.varint()?.into_inner()).map_err(|_| DecodeError::InvalidValue)?;
+		let timescale = Timescale::new(r.varint()?).map_err(|_| DecodeError::InvalidValue)?;
 
 		Ok(Self {
 			priority,
@@ -95,8 +95,8 @@ impl Message for TrackInfo {
 			(_, None) => 0,
 			(_, Some(age)) => u64::try_from(age.as_millis() + 1).map_err(|_| EncodeError::BoundsExceeded)?,
 		};
-		w.varint(VarInt::from(encoded))?;
-		w.varint(VarInt::from(u64::from(self.timescale)))?;
+		w.varint(encoded)?;
+		w.varint(u64::from(self.timescale))?;
 		Ok(())
 	}
 }
@@ -160,8 +160,8 @@ mod test {
 				let w = &mut Encoder::new(&mut raw, version.into());
 				w.u8(0);
 				super::super::subscribe::pad_group_order(w, version).unwrap();
-				w.varint(millis.into()).unwrap();
-				w.varint(1000u64.into()).unwrap();
+				w.varint(millis).unwrap();
+				w.varint(1000u64).unwrap();
 				let decoded = TrackInfo::decode_msg(&mut Decoder::new(&raw, version.into()), version).unwrap();
 				assert_eq!(
 					decoded.max_age,
@@ -177,7 +177,7 @@ mod test {
 				let old_reader = &mut Decoder::new(&encoded, version.into());
 				old_reader.u8().unwrap();
 				super::super::subscribe::skip_group_order(old_reader, version).unwrap();
-				assert_eq!(old_reader.varint().unwrap().into_inner(), millis.min(LEGACY_UNLIMITED));
+				assert_eq!(old_reader.varint().unwrap(), millis.min(LEGACY_UNLIMITED));
 			}
 		}
 	}

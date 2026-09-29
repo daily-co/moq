@@ -57,7 +57,7 @@ impl Decode<Version> for Parameters {
 
 		// Draft-14/15/16 count the pairs; draft-17+ reads them until the buffer is empty.
 		let count = match version {
-			Version::Draft14 | Version::Draft15 | Version::Draft16 => Some(r.varint()?.into_inner()),
+			Version::Draft14 | Version::Draft15 | Version::Draft16 => Some(r.varint()?),
 			_ => None,
 		};
 		if count.is_some_and(|count| count > MAX_PARAMS) {
@@ -74,7 +74,7 @@ impl Decode<Version> for Parameters {
 				return Err(DecodeError::TooMany);
 			}
 
-			let kind = r.varint()?.into_inner();
+			let kind = r.varint()?;
 			let kind = match delta && i > 0 {
 				true => prev.checked_add(kind).ok_or(DecodeError::BoundsExceeded)?,
 				false => kind,
@@ -87,7 +87,7 @@ impl Decode<Version> for Parameters {
 				if params.get_varint(kind).is_some() {
 					return Err(DecodeError::Duplicate);
 				}
-				params.vars.push((kind, r.varint()?.into_inner()));
+				params.vars.push((kind, r.varint()?));
 			} else {
 				let kind = ParameterBytes::from(kind);
 				let value = r.bytes()?;
@@ -117,15 +117,15 @@ impl Encode<Version> for Parameters {
 
 		match version {
 			Version::Draft14 | Version::Draft15 => {
-				w.varint(count.into())?;
+				w.varint(count as u64)?;
 
 				for (kind, value) in &self.vars {
-					w.varint(u64::from(*kind).into())?;
-					w.varint((*value).into())?;
+					w.varint(u64::from(*kind))?;
+					w.varint(*value)?;
 				}
 
 				for (kind, value) in &self.bytes {
-					w.varint(u64::from(*kind).into())?;
+					w.varint(u64::from(*kind))?;
 					w.bytes(value)?;
 				}
 			}
@@ -133,7 +133,7 @@ impl Encode<Version> for Parameters {
 				// Draft16: count prefix + delta encoding
 				// Draft17+: NO count prefix + delta encoding
 				if matches!(version, Version::Draft16) {
-					w.varint(count.into())?;
+					w.varint(count as u64)?;
 				}
 
 				enum ParamRef<'a> {
@@ -147,11 +147,11 @@ impl Encode<Version> for Parameters {
 
 				let mut prev = 0u64;
 				for (kind, value) in all {
-					w.varint((kind - prev).into())?;
+					w.varint(kind - prev)?;
 					prev = kind;
 
 					match value {
-						ParamRef::Var(v) => w.varint(v.into())?,
+						ParamRef::Var(v) => w.varint(v)?,
 						ParamRef::Bytes(v) => w.bytes(v)?,
 					}
 				}
@@ -209,7 +209,7 @@ impl Param for u8 {
 	fn param_encode(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		match version {
 			// Draft-14/15/16: u8 encoded as varint
-			Version::Draft14 | Version::Draft15 | Version::Draft16 => w.varint((*self).into())?,
+			Version::Draft14 | Version::Draft15 | Version::Draft16 => w.varint(u64::from(*self))?,
 			_ => w.u8(*self),
 		}
 		Ok(())
@@ -237,7 +237,7 @@ impl Param for bool {
 
 	fn param_decode(r: &mut Decoder<'_>, version: Version) -> Result<Self, DecodeError> {
 		match version {
-			Version::Draft14 | Version::Draft15 | Version::Draft16 => match r.varint()?.into_inner() {
+			Version::Draft14 | Version::Draft15 | Version::Draft16 => match r.varint()? {
 				0 => Ok(false),
 				1 => Ok(true),
 				_ => Err(DecodeError::InvalidValue),
@@ -249,12 +249,12 @@ impl Param for bool {
 
 impl Param for u64 {
 	fn param_encode(&self, w: &mut Encoder<'_>, _: Version) -> Result<(), EncodeError> {
-		w.varint((*self).into())?;
+		w.varint(*self)?;
 		Ok(())
 	}
 
 	fn param_decode(r: &mut Decoder<'_>, _: Version) -> Result<Self, DecodeError> {
-		Ok(r.varint()?.into_inner())
+		r.varint()
 	}
 }
 
@@ -274,13 +274,13 @@ impl Param for Location {
 				// matching the other length-prefixed parameters.
 				let mut buf = Vec::new();
 				let mut inner = Encoder::new(&mut buf, Version::Draft15.into());
-				inner.varint(self.group.into())?;
-				inner.varint(self.object.into())?;
+				inner.varint(self.group)?;
+				inner.varint(self.object)?;
 				w.bytes(&buf)
 			}
 			_ => {
-				w.varint(self.group.into())?;
-				w.varint(self.object.into())?;
+				w.varint(self.group)?;
+				w.varint(self.object)?;
 				Ok(())
 			}
 		}
@@ -290,16 +290,16 @@ impl Param for Location {
 		match version {
 			Version::Draft14 | Version::Draft15 | Version::Draft16 => {
 				let mut inner = Decoder::new(r.bytes()?, Version::Draft15.into());
-				let group = inner.varint()?.into_inner();
-				let object = inner.varint()?.into_inner();
+				let group = inner.varint()?;
+				let object = inner.varint()?;
 				if !inner.is_empty() {
 					return Err(DecodeError::TrailingBytes);
 				}
 				Ok(Location { group, object })
 			}
 			_ => {
-				let group = r.varint()?.into_inner();
-				let object = r.varint()?.into_inner();
+				let group = r.varint()?;
+				let object = r.varint()?;
 				Ok(Location { group, object })
 			}
 		}
@@ -351,7 +351,7 @@ macro_rules! encode_params {
 		#[allow(unused_mut)]
 		let mut _count: usize = 0;
 		$(_count += if $crate::ietf::Param::param_present(&$val) { 1 } else { 0 };)*
-		$w.varint($crate::coding::VarInt::from(_count))?;
+		$w.varint(_count as u64)?;
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut _prev_key: u64 = 0;
@@ -365,7 +365,7 @@ macro_rules! encode_params {
 					_ if _first => _key,
 					_ => _key - _prev_key,
 				};
-				$w.varint($crate::coding::VarInt::from(_wire))?;
+				$w.varint(_wire)?;
 				_prev_key = _key;
 				_first = false;
 				$crate::ietf::Param::param_encode(&$val, $w, _version)?;
@@ -408,7 +408,7 @@ macro_rules! decode_params {
 
 		{
 			let _version: $crate::ietf::Version = $version;
-			let _count = $r.varint()?.into_inner();
+			let _count = $r.varint()?;
 			if _count > 64 {
 				return Err($crate::coding::DecodeError::TooMany);
 			}
@@ -416,7 +416,7 @@ macro_rules! decode_params {
 			#[allow(unused_mut, unused_assignments)]
 			let mut _prev_key: u64 = 0;
 			for _i in 0.._count {
-				let _wire = $r.varint()?.into_inner();
+				let _wire = $r.varint()?;
 				let _key: u64 = match _version {
 					$crate::ietf::Version::Draft14 | $crate::ietf::Version::Draft15 => _wire,
 					_ if _i == 0 => _wire,
@@ -867,8 +867,8 @@ mod tests {
 		] {
 			let mut buf = Vec::new();
 			let mut w = Encoder::new(&mut buf, version.into());
-			w.varint(VarInt::from(1usize)).unwrap();
-			w.varint(VarInt::from(0x10u64)).unwrap();
+			w.varint(1).unwrap();
+			w.varint(0x10u64).unwrap();
 			true.param_encode(&mut w, version).unwrap();
 
 			let mut bytes = Decoder::new(&buf, version.into());
@@ -897,20 +897,20 @@ mod tests {
 			let mut buf = Vec::new();
 			let mut w = Encoder::new(&mut buf, version.into());
 			// Encode count = 2
-			w.varint(VarInt::from(2usize)).unwrap();
+			w.varint(2).unwrap();
 			match version {
 				Version::Draft14 | Version::Draft15 => {
 					// Plain (non-delta) keys: first key=0x20, second key=0x20
-					w.varint(VarInt::from(0x20u64)).unwrap();
+					w.varint(0x20u64).unwrap();
 					100u8.param_encode(&mut w, version).unwrap();
-					w.varint(VarInt::from(0x20u64)).unwrap();
+					w.varint(0x20u64).unwrap();
 					200u8.param_encode(&mut w, version).unwrap();
 				}
 				_ => {
 					// Delta-encoded: first delta=0x20 (abs=0x20), second delta=0 (abs=0x20)
-					w.varint(VarInt::from(0x20u64)).unwrap();
+					w.varint(0x20u64).unwrap();
 					100u8.param_encode(&mut w, version).unwrap();
-					w.varint(VarInt::ZERO).unwrap();
+					w.varint(0).unwrap();
 					200u8.param_encode(&mut w, version).unwrap();
 				}
 			}

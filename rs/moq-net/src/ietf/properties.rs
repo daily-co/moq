@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use crate::Timescale;
-use crate::coding::{DecodeError, Decoder, EncodeError, Encoder, VarInt};
+use crate::coding::{DecodeError, Decoder, EncodeError, Encoder};
 
 use super::{GroupOrder, Version};
 
@@ -73,26 +73,26 @@ impl Properties {
 		let mut prev_type = 0;
 
 		if let Some(age) = self.max_cache_duration {
-			w.varint(VarInt::from(4u64))?;
-			w.varint(VarInt::try_from(age.as_millis())?)?;
+			w.varint(4u64)?;
+			w.varint(u64::try_from(age.as_millis()).map_err(|_| EncodeError::BoundsExceeded)?)?;
 			prev_type = 4;
 		}
 
 		if let Some(timescale) = self.timescale {
-			w.varint(VarInt::from(TIMESCALE - prev_type))?;
-			w.varint(VarInt::from(u64::from(timescale)))?;
+			w.varint(TIMESCALE - prev_type)?;
+			w.varint(u64::from(timescale))?;
 			prev_type = TIMESCALE;
 		}
 
 		if let Some(priority) = self.priority {
-			w.varint(VarInt::from(DEFAULT_PUBLISHER_PRIORITY - prev_type))?;
-			w.varint(VarInt::from(u64::from(priority)))?;
+			w.varint(DEFAULT_PUBLISHER_PRIORITY - prev_type)?;
+			w.varint(u64::from(priority))?;
 			prev_type = DEFAULT_PUBLISHER_PRIORITY;
 		}
 
 		if let Some(group_order) = self.group_order {
-			w.varint(VarInt::from(DEFAULT_PUBLISHER_GROUP_ORDER - prev_type))?;
-			w.varint(VarInt::from(u64::from(u8::from(group_order))))?;
+			w.varint(DEFAULT_PUBLISHER_GROUP_ORDER - prev_type)?;
+			w.varint(u64::from(u8::from(group_order)))?;
 		}
 
 		Ok(())
@@ -126,7 +126,7 @@ impl Properties {
 				return Err(DecodeError::TooMany);
 			}
 
-			let delta = r.varint()?.into_inner();
+			let delta = r.varint()?;
 			let abs = if i == 0 {
 				delta
 			} else {
@@ -137,7 +137,7 @@ impl Properties {
 
 			if abs % 2 == 0 {
 				// Even type: single varint value
-				let value = r.varint()?.into_inner();
+				let value = r.varint()?;
 				match abs {
 					4 => properties.max_cache_duration = Some(Duration::from_millis(value)),
 					TIMESCALE => {
@@ -161,7 +161,7 @@ impl Properties {
 				}
 			} else {
 				// Odd type: length-prefixed bytes
-				let len = usize::try_from(r.varint()?)?;
+				let len = usize::try_from(r.varint()?).map_err(|_| DecodeError::BoundsExceeded)?;
 				if len > MAX_KVP_VALUE_LEN {
 					return Err(DecodeError::BoundsExceeded);
 				}
@@ -190,12 +190,8 @@ mod tests {
 	fn test_skip_varint_property() {
 		// Even type (0x02 = DELIVERY_TIMEOUT), varint value
 		let mut buf = Vec::new();
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(0x02u64))
-			.unwrap(); // delta type
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(5000u64))
-			.unwrap(); // value
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(0x02u64).unwrap(); // delta type
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(5000u64).unwrap(); // value
 		let mut bytes = bytes::Bytes::from(buf);
 		crate::coding::decode_buf(&mut bytes, Version::Draft17, Properties::decode).unwrap();
 		assert!(!!bytes.is_empty());
@@ -205,12 +201,8 @@ mod tests {
 	fn test_skip_bytes_property() {
 		// Odd type (0x0B = IMMUTABLE_PROPERTIES), length-prefixed
 		let mut buf = Vec::new();
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(0x0Bu64))
-			.unwrap(); // delta type
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(3u64))
-			.unwrap(); // length
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(0x0Bu64).unwrap(); // delta type
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(3u64).unwrap(); // length
 		buf.extend_from_slice(&[0x01, 0x02, 0x03]); // value bytes
 		let mut bytes = bytes::Bytes::from(buf);
 		crate::coding::decode_buf(&mut bytes, Version::Draft17, Properties::decode).unwrap();
@@ -221,26 +213,14 @@ mod tests {
 	fn test_skip_multiple_properties() {
 		let mut buf = Vec::new();
 		// First: type 0x02 (even), varint value
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(0x02u64))
-			.unwrap();
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(1000u64))
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(0x02u64).unwrap();
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(1000u64).unwrap();
 		// Second: delta = 0x02 → abs type 0x04 (even), varint value
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(0x02u64))
-			.unwrap();
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(2000u64))
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(0x02u64).unwrap();
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(2000u64).unwrap();
 		// Third: delta = 0x07 → abs type 0x0B (odd), length-prefixed
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(0x07u64))
-			.unwrap();
-		Encoder::new(&mut buf, Version::Draft17.into())
-			.varint(VarInt::from(2u64))
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(0x07u64).unwrap();
+		Encoder::new(&mut buf, Version::Draft17.into()).varint(2u64).unwrap();
 		buf.extend_from_slice(&[0xAA, 0xBB]);
 
 		let mut bytes = bytes::Bytes::from(buf);
@@ -282,12 +262,8 @@ mod tests {
 			Version::Draft22,
 		] {
 			let mut buf = Vec::new();
-			Encoder::new(&mut buf, version.into())
-				.varint(VarInt::from(0x0eu64))
-				.unwrap();
-			Encoder::new(&mut buf, version.into())
-				.varint(VarInt::from(256u64))
-				.unwrap();
+			Encoder::new(&mut buf, version.into()).varint(0x0eu64).unwrap();
+			Encoder::new(&mut buf, version.into()).varint(256u64).unwrap();
 			assert!(matches!(
 				crate::coding::decode_buf(&mut bytes::Bytes::from(buf), version, Properties::decode),
 				Err(DecodeError::InvalidValue)
@@ -300,12 +276,8 @@ mod tests {
 	#[test]
 	fn test_rejects_zero_group_order() {
 		let mut buf = Vec::new();
-		Encoder::new(&mut buf, Version::Draft18.into())
-			.varint(VarInt::from(0x22u64))
-			.unwrap();
-		Encoder::new(&mut buf, Version::Draft18.into())
-			.varint(VarInt::ZERO)
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft18.into()).varint(0x22u64).unwrap();
+		Encoder::new(&mut buf, Version::Draft18.into()).varint(0).unwrap();
 
 		let mut bytes = bytes::Bytes::from(buf);
 		assert!(crate::coding::decode_buf(&mut bytes, Version::Draft18, Properties::decode).is_err());
@@ -316,12 +288,8 @@ mod tests {
 	#[test]
 	fn test_decodes_draft16_track_extensions() {
 		let mut buf = Vec::new();
-		Encoder::new(&mut buf, Version::Draft16.into())
-			.varint(VarInt::from(0x22u64))
-			.unwrap();
-		Encoder::new(&mut buf, Version::Draft16.into())
-			.varint(VarInt::from(2u64))
-			.unwrap();
+		Encoder::new(&mut buf, Version::Draft16.into()).varint(0x22u64).unwrap();
+		Encoder::new(&mut buf, Version::Draft16.into()).varint(2u64).unwrap();
 
 		let mut bytes = bytes::Bytes::from(buf);
 		let properties = crate::coding::decode_buf(&mut bytes, Version::Draft16, Properties::decode).unwrap();

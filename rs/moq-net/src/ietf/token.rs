@@ -37,8 +37,8 @@ pub fn from_setup(params: &Parameters, version: Version) -> Result<Option<Token>
 pub fn into_setup(params: &mut Parameters, token: &Token, version: Version) -> Result<(), EncodeError> {
 	let mut value = Vec::new();
 	let mut w = Encoder::new(&mut value, version.into());
-	w.varint(USE_VALUE.into())?;
-	w.varint(token.kind.into())?;
+	w.varint(USE_VALUE)?;
+	w.varint(token.kind)?;
 	w.slice(&token.value);
 	params.set_bytes(ParameterBytes::AuthorizationToken, value);
 	Ok(())
@@ -50,7 +50,7 @@ fn decode(buf: &[u8], version: Version) -> Result<Token, Error> {
 	let malformed = |_| Error::Session(SessionError::KeyValueFormatting);
 	let mut r = Decoder::new(buf, version.into());
 
-	match r.varint().map_err(malformed)?.into_inner() {
+	match r.varint().map_err(malformed)? {
 		USE_VALUE => {}
 		// With no cache, section 9.1.4 treats a registration as a value; the alias is unused.
 		REGISTER => {
@@ -61,7 +61,7 @@ fn decode(buf: &[u8], version: Version) -> Result<Token, Error> {
 		_ => return Err(Error::Session(SessionError::KeyValueFormatting)),
 	}
 
-	let kind = r.varint().map_err(malformed)?.into_inner();
+	let kind = r.varint().map_err(malformed)?;
 	Ok(Token {
 		kind,
 		value: r.rest().to_vec(),
@@ -105,7 +105,7 @@ mod tests {
 		let mut raw = Vec::new();
 		let mut w = Encoder::new(&mut raw, version.into());
 		for field in fields {
-			w.varint((*field).into()).unwrap();
+			w.varint(*field).unwrap();
 		}
 		raw.extend_from_slice(value);
 		let mut params = Parameters::default();
@@ -177,11 +177,9 @@ mod tests {
 	fn two_tokens_are_refused() {
 		for version in VERSIONS {
 			let mut value = Vec::new();
+			Encoder::new(&mut value, version.into()).varint(USE_VALUE).unwrap();
 			Encoder::new(&mut value, version.into())
-				.varint(crate::coding::VarInt::from(USE_VALUE))
-				.unwrap();
-			Encoder::new(&mut value, version.into())
-				.varint(crate::coding::VarInt::from(Token::OUT_OF_BAND))
+				.varint(Token::OUT_OF_BAND)
 				.unwrap();
 
 			let key = u64::from(ParameterBytes::AuthorizationToken);
@@ -193,14 +191,10 @@ mod tests {
 			};
 			let mut raw = Vec::new();
 			if let Some(count) = count {
-				Encoder::new(&mut raw, version.into())
-					.varint(crate::coding::VarInt::from(count))
-					.unwrap();
+				Encoder::new(&mut raw, version.into()).varint(count).unwrap();
 			}
 			for key in keys {
-				Encoder::new(&mut raw, version.into())
-					.varint(crate::coding::VarInt::from(key))
-					.unwrap();
+				Encoder::new(&mut raw, version.into()).varint(key).unwrap();
 				Encoder::new(&mut raw, version.into()).bytes(&value).unwrap();
 			}
 
