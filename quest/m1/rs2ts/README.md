@@ -62,16 +62,13 @@ js/net it replaces, measured with the [browser benchmarks](/quest/m1/browser-ben
 - [Generated lite](/quest/m1/rs2ts/lite.md) - @moq/net's lite session and model layer are generated from moq-net
 - [Generated IETF](/quest/m1/rs2ts/ietf.md) - @moq/net's moq-transport session is generated too
 - [Remove moq-wasm](/quest/m1/rs2ts/remove-wasm.md) - the WASM experiment is deleted once generated lite ships
+- [Browser benchmarks](/quest/m1/browser-benchmarks.md) - the harness the no-downgrade report uses
 
 ## Closes
 
 - [#2907](https://github.com/moq-dev/moq/issues/2907) - close this issue when the quest finishes
 - [#2822](https://github.com/moq-dev/moq/issues/2822) - close this issue when the quest finishes
 - [#2835](https://github.com/moq-dev/moq/issues/2835) - close this issue when the quest finishes
-
-## Required
-
-- [Browser benchmarks](/quest/m1/browser-benchmarks.md) - the harness the no-downgrade report uses
 
 ## Related
 
