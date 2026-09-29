@@ -370,6 +370,158 @@ pub fn varint(data: &[u8]) -> bool {
 	true
 }
 
+/// A fixed mix of control and data-stream messages, for the codec benchmark.
+///
+/// Encoding appends every message to a buffer; decoding reads them back in the same
+/// order. The mix leans on the messages every subscription pays for.
+pub struct Messages {
+	lite_subscribe: lite::Subscribe<'static>,
+	lite_update: lite::SubscribeUpdate,
+	lite_start: lite::SubscribeResponse,
+	lite_info: lite::TrackInfo,
+	lite_group: lite::Group,
+	ietf_subscribe: ietf::Subscribe<'static>,
+	ietf_ok: ietf::SubscribeOk,
+	ietf_group: ietf::GroupHeader,
+}
+
+impl Default for Messages {
+	fn default() -> Self {
+		use std::time::Duration;
+
+		Self {
+			lite_subscribe: lite::Subscribe {
+				id: 7,
+				broadcast: Path::new("room/alice"),
+				track: "video".into(),
+				priority: 3,
+				max_age: Duration::from_millis(500),
+				start_group: Some(1_000),
+				end_group: None,
+				start_frame: 0,
+				end_frame: None,
+			},
+			lite_update: lite::SubscribeUpdate {
+				priority: 4,
+				max_age: Duration::from_millis(500),
+				start_group: Some(1_000),
+				end_group: Some(2_000),
+				start_frame: 0,
+				end_frame: None,
+			},
+			lite_start: lite::SubscribeResponse::Start(lite::SubscribeStart { group: 1_234 }),
+			lite_info: lite::TrackInfo {
+				priority: 1,
+				max_age: Some(Duration::from_secs(10)),
+				timescale: crate::Timescale::MICRO,
+			},
+			lite_group: lite::Group {
+				subscribe: 7,
+				sequence: 123_456,
+				frame_start: 0,
+			},
+			ietf_subscribe: ietf::Subscribe {
+				request_id: ietf::RequestId(2),
+				track_namespace: Path::new("room/alice"),
+				track_name: "video".into(),
+				subscriber_priority: 128,
+				group_order: ietf::GroupOrder::Descending,
+				filter: ietf::Filter::NextObject,
+				fill: None,
+				properties_wanted: false,
+			},
+			// Draft-17+ carries the request id in the control message framing instead.
+			ietf_ok: ietf::SubscribeOk {
+				request_id: None,
+				track_alias: 5,
+				largest: Some(ietf::Location {
+					group: 1_000,
+					object: 3,
+				}),
+				properties: Default::default(),
+			},
+			ietf_group: ietf::GroupHeader {
+				track_alias: 5,
+				group_id: 1_000,
+				sub_group_id: 0,
+				publisher_priority: 128,
+				flags: Default::default(),
+			},
+		}
+	}
+}
+
+/// The moq-lite version the [`Messages`] mix is encoded at.
+const BENCH_LITE: lite::Version = lite::Version::Lite06;
+
+/// The moq-transport draft the [`Messages`] mix is encoded at: a leading-ones varint draft.
+const BENCH_IETF: ietf::Version = ietf::Version::Draft20;
+
+impl Messages {
+	/// Append the moq-lite messages to `out`.
+	pub fn encode_lite(&self, out: &mut Vec<u8>) {
+		let v = BENCH_LITE;
+		self.lite_subscribe.encode(out, v).unwrap();
+		self.lite_update.encode(out, v).unwrap();
+		self.lite_start.encode(out, v).unwrap();
+		self.lite_info.encode(out, v).unwrap();
+		self.lite_group.encode(out, v).unwrap();
+	}
+
+	/// Decode what [`Self::encode_lite`] wrote.
+	pub fn decode_lite(&self, mut data: &[u8]) {
+		let v = BENCH_LITE;
+		lite::Subscribe::decode(&mut data, v).unwrap();
+		lite::SubscribeUpdate::decode(&mut data, v).unwrap();
+		lite::SubscribeResponse::decode(&mut data, v).unwrap();
+		lite::TrackInfo::decode(&mut data, v).unwrap();
+		lite::Group::decode(&mut data, v).unwrap();
+		assert!(data.is_empty());
+	}
+
+	/// Append the moq-transport messages to `out`.
+	pub fn encode_ietf(&self, out: &mut Vec<u8>) {
+		let v = BENCH_IETF;
+		self.ietf_subscribe.encode(out, v).unwrap();
+		self.ietf_ok.encode(out, v).unwrap();
+		self.ietf_group.encode(out, v).unwrap();
+	}
+
+	/// Decode what [`Self::encode_ietf`] wrote.
+	pub fn decode_ietf(&self, mut data: &[u8]) {
+		let v = BENCH_IETF;
+		ietf::Subscribe::decode(&mut data, v).unwrap();
+		ietf::SubscribeOk::decode(&mut data, v).unwrap();
+		ietf::GroupHeader::decode(&mut data, v).unwrap();
+		assert!(data.is_empty());
+	}
+}
+
+/// Append `values` as varints in the wire form of moq-lite (`ietf == false`) or of a
+/// leading-ones moq-transport draft.
+pub fn encode_varints(values: &[u64], ietf: bool, out: &mut Vec<u8>) {
+	for value in values {
+		let value = VarInt::try_from(*value).unwrap();
+		match ietf {
+			false => value.encode(out, BENCH_LITE).unwrap(),
+			true => value.encode(out, BENCH_IETF).unwrap(),
+		}
+	}
+}
+
+/// Sum the varints [`encode_varints`] wrote.
+pub fn decode_varints(mut data: &[u8], ietf: bool) -> u64 {
+	let mut sum = 0u64;
+	while !data.is_empty() {
+		let value = match ietf {
+			false => VarInt::decode(&mut data, BENCH_LITE).unwrap(),
+			true => VarInt::decode(&mut data, BENCH_IETF).unwrap(),
+		};
+		sum = sum.wrapping_add(value.into_inner());
+	}
+	sum
+}
+
 /// Exercise the [`Path`] invariants against arbitrary text.
 ///
 /// The input is UTF-8, split at the first newline into a target path and a base. The
