@@ -25,6 +25,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -39,7 +40,7 @@ use object_store::ObjectStore;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use crate::recover::recover;
+use crate::recover::{checkpoint, recover};
 use crate::segment::{Frame, Group, Object};
 use crate::{Error, Info, Key, Result, Store};
 
@@ -98,7 +99,9 @@ pub struct Writer<S> {
 	committer: Committer<S>,
 	grace: Option<Duration>,
 	/// Deadlines for deleting expired or orphaned objects, oldest first.
-	deletions: VecDeque<(Instant, Vec<Key>)>,
+	deletions: VecDeque<(Instant, Expired)>,
+	/// The oldest timeline segment that may still be stored; pruning deletes upward from it.
+	pruned: u64,
 	// Owns the recording's timeline track.
 	_timeline: broadcast::Producer,
 }
@@ -156,8 +159,9 @@ impl<S: ObjectStore> Writer<S> {
 	/// any group at or below the largest one stored for it, so a source whose group sequences
 	/// restarted needs a new prefix. A DVR also deletes, one grace period after recovery, every
 	/// group object its retained records do not reference, such as interrupted expirations and
-	/// uploads. The writer must own the prefix exclusively. Fails, deleting nothing, when the
-	/// recording cannot be listed or its timeline cannot be replayed.
+	/// uploads, and every timeline object older than the checkpoint it recovered from. The writer
+	/// must own the prefix exclusively. Fails, deleting nothing, when the recording cannot be
+	/// listed or its timeline cannot be replayed.
 	pub async fn new(store: Store<S>, source: broadcast::Consumer, config: Config) -> Result<Self> {
 		let section = timeline::Segmenter::new(config.timeline.clone()).section();
 		let recovery = recover(&store, &section.track, config.retention.is_some()).await?;
@@ -193,10 +197,14 @@ impl<S: ObjectStore> Writer<S> {
 		let (commands, receiver) = mpsc::unbounded_channel();
 		let retention = config.retention;
 		let mut deletions = VecDeque::new();
+		let stale = Expired {
+			groups: recovery.orphans,
+			segments: recovery.stale.clone(),
+		};
 		if let Some(retention) = &retention
-			&& !recovery.orphans.is_empty()
+			&& !stale.is_empty()
 		{
-			deletions.push_back((Instant::now() + retention.grace, recovery.orphans));
+			deletions.push_back((Instant::now() + retention.grace, stale));
 		}
 		Ok(Self {
 			control: Control {
@@ -212,10 +220,12 @@ impl<S: ObjectStore> Writer<S> {
 				timescale: section.timescale.into(),
 				retention: retention.as_ref().map(|r| r.window),
 				window: recovery.checkpoint.map(|c| c.records.into()).unwrap_or_default(),
+				checkpoints: recovery.checkpoints,
 				sequence: recovery.sequence,
 			},
 			grace: retention.map(|r| r.grace),
 			deletions,
+			pruned: recovery.stale.start,
 			_timeline: broadcast,
 		})
 	}
@@ -238,6 +248,7 @@ impl<S: ObjectStore> Writer<S> {
 			committer,
 			grace,
 			mut deletions,
+			mut pruned,
 			_timeline,
 		} = self;
 		let shared = control.shared.clone();
@@ -316,8 +327,8 @@ impl<S: ObjectStore> Writer<S> {
 				}
 				_ = source.closed(), if !closed => closed = true,
 				_ = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
-					let (_, keys) = deletions.pop_front().unwrap();
-					delete(&shared.store, keys).await;
+					let (_, expired) = deletions.pop_front().unwrap();
+					delete(&shared.store, &shared.timeline, &mut pruned, expired).await;
 				}
 			}
 		}
@@ -331,9 +342,9 @@ impl<S: ObjectStore> Writer<S> {
 
 		// Complete expirations already committed to the timeline; nothing new expires after the
 		// final segment.
-		for (deadline, keys) in deletions {
+		for (deadline, expired) in deletions {
 			tokio::time::sleep_until(deadline).await;
-			delete(&shared.store, keys).await;
+			delete(&shared.store, &shared.timeline, &mut pruned, expired).await;
 		}
 
 		// A broadcast end carries no cause; only the deprecated `abort` still reports one.
@@ -647,7 +658,21 @@ fn take_objects(
 }
 
 /// An in-flight segment commit, returning the committer and the expired objects to delete.
-type Commit<S> = BoxFuture<'static, (Committer<S>, Result<Vec<Key>>)>;
+type Commit<S> = BoxFuture<'static, (Committer<S>, Result<Expired>)>;
+
+/// Objects the timeline stopped needing, deleted once the grace elapses.
+struct Expired {
+	/// Group objects no retained record references.
+	groups: Vec<Key>,
+	/// Timeline segments no recovery reads.
+	segments: Range<u64>,
+}
+
+impl Expired {
+	fn is_empty(&self) -> bool {
+		self.groups.is_empty() && self.segments.is_empty()
+	}
+}
 
 /// Deferred records to commit: live, then the terminal drain.
 enum Segments {
@@ -675,18 +700,21 @@ struct Committer<S> {
 	retention: Option<Duration>,
 	/// Committed records still in the timeline window, oldest first.
 	window: VecDeque<Record>,
+	/// A DVR's stored timeline segments that recovery still reads, oldest first, each with the
+	/// first record index its opening checkpoint restates.
+	checkpoints: VecDeque<(u64, u64)>,
 	/// Added to the timeline track's group sequences, continuing a resumed recording's numbering.
 	sequence: u64,
 }
 
 impl<S: ObjectStore> Committer<S> {
 	/// Commit `pending`, returning the committer and the expired objects to delete after the grace.
-	async fn commit(mut self, pending: Pending, objects: Vec<(String, Option<Object>)>) -> (Self, Result<Vec<Key>>) {
+	async fn commit(mut self, pending: Pending, objects: Vec<(String, Option<Object>)>) -> (Self, Result<Expired>) {
 		let result = self.commit_inner(pending, objects).await;
 		(self, result)
 	}
 
-	async fn commit_inner(&mut self, mut pending: Pending, objects: Vec<(String, Option<Object>)>) -> Result<Vec<Key>> {
+	async fn commit_inner(&mut self, mut pending: Pending, objects: Vec<(String, Option<Object>)>) -> Result<Expired> {
 		let shared = self.shared.clone();
 		let store = &shared.store;
 		let puts = objects.iter().map(|(name, object)| async move {
@@ -722,15 +750,36 @@ impl<S: ObjectStore> Committer<S> {
 		let object = self.read_timeline(pts)?;
 		store.put_segments(&shared.timeline, segment, &object).await?;
 
-		let mut keys = Vec::new();
+		let mut groups = Vec::new();
 		for record in expired {
 			for (name, ranges) in &record.tracks {
 				if let (Some(first), Some(last)) = (ranges.first(), ranges.last()) {
-					keys.push(Key::groups(name.clone(), first.start..=last.end)?);
+					groups.push(Key::groups(name.clone(), first.start..=last.end)?);
 				}
 			}
 		}
-		Ok(keys)
+		let segments = self.prune(segment, &object)?;
+		Ok(Expired { groups, segments })
+	}
+
+	/// Track the newly stored timeline `object`, returning the older segments no recovery reads.
+	///
+	/// Recovery walks back from the newest object to the first whose checkpoint restates the
+	/// newest one's offset, so every object before that one is no longer needed.
+	fn prune(&mut self, segment: u64, object: &Object) -> Result<Range<u64>> {
+		if self.retention.is_none() {
+			return Ok(segment..segment);
+		}
+		let (offset, start) = checkpoint(object)?;
+		self.checkpoints.push_back((segment, start));
+		let keep = self
+			.checkpoints
+			.iter()
+			.rposition(|&(_, start)| start <= offset)
+			.unwrap_or(0);
+		let first = self.checkpoints[0].0;
+		self.checkpoints.drain(..keep);
+		Ok(first..self.checkpoints[0].0)
 	}
 
 	/// Pop the oldest records while the rest still cover the retention window.
@@ -784,14 +833,39 @@ impl<S: ObjectStore> Committer<S> {
 	}
 }
 
-async fn delete<S: ObjectStore>(store: &Store<S>, keys: Vec<Key>) {
-	let deletes = keys.iter().map(|key| async move { (key, store.delete(key).await) });
-	for (key, result) in futures::future::join_all(deletes).await {
-		// An object that outlives its expiry advertises nothing; recovery cleans it up.
-		if let Err(err) = result {
-			tracing::warn!(?key, %err, "failed to delete an expired object");
+/// Delete `expired`'s group objects, and the timeline objects from `pruned` up to its segments.
+///
+/// Timeline objects go oldest first and stop at the first failure, so the stored segments stay
+/// consecutive, as recovery requires, and a later deletion retries from there.
+async fn delete<S: ObjectStore>(store: &Store<S>, timeline: &str, pruned: &mut u64, expired: Expired) {
+	let groups = async {
+		let deletes = expired
+			.groups
+			.iter()
+			.map(|key| async move { (key, store.delete(key).await) });
+		for (key, result) in futures::future::join_all(deletes).await {
+			// An object that outlives its expiry advertises nothing; recovery cleans it up.
+			if let Err(err) = result {
+				tracing::warn!(?key, %err, "failed to delete an expired object");
+			}
 		}
-	}
+	};
+	let segments = async {
+		while *pruned < expired.segments.end {
+			let result = match Key::segments(timeline, *pruned) {
+				Ok(key) => store.delete(&key).await,
+				Err(err) => Err(err),
+			};
+			match result {
+				Ok(()) | Err(Error::NotFound(_)) => *pruned += 1,
+				Err(err) => {
+					tracing::warn!(segment = *pruned, %err, "failed to delete a pruned timeline object");
+					break;
+				}
+			}
+		}
+	};
+	futures::join!(groups, segments);
 }
 
 fn timeline_error(err: moq_mux::Error) -> Error {
@@ -845,8 +919,8 @@ mod tests {
 		group.finish().unwrap();
 	}
 
-	/// Replay every stored timeline object, returning the records still in the window.
-	async fn window<S: ObjectStore>(store: &Store<S>) -> Vec<Record> {
+	/// The stored timeline segments, ascending.
+	async fn segments<S: ObjectStore>(store: &Store<S>) -> Vec<u64> {
 		let entries: Vec<_> = store
 			.list(&Query::segments(TIMELINE).unwrap())
 			.try_collect()
@@ -860,9 +934,16 @@ mod tests {
 			})
 			.collect();
 		segments.sort();
+		segments
+	}
+
+	/// Replay every stored timeline object, returning the records still in the window.
+	async fn window<S: ObjectStore>(store: &Store<S>) -> Vec<Record> {
+		let segments = segments(store).await;
+		let first = segments.first().copied().unwrap_or_default();
 		assert_eq!(
 			segments,
-			(0..segments.len() as u64).collect::<Vec<_>>(),
+			(first..first + segments.len() as u64).collect::<Vec<_>>(),
 			"timeline objects are consecutive"
 		);
 
@@ -1024,6 +1105,8 @@ mod tests {
 			.unwrap();
 		let expected: HashSet<_> = (3..6).map(|s| Key::groups("video", s..=s).unwrap()).collect();
 		assert_eq!(stored, expected);
+		// Every checkpoint restates the whole window, so only the newest timeline object is needed.
+		assert_eq!(segments(&store).await, vec![5]);
 	}
 
 	#[tokio::test]
@@ -1324,7 +1407,7 @@ mod tests {
 		assert_eq!(stored_groups(&store).await, referenced(&records));
 		store.get_info("video").await.unwrap();
 		store.get_info(TIMELINE).await.unwrap();
-		store.get_segments(TIMELINE, 0).await.unwrap();
+		assert_eq!(segments(&store).await, vec![7]);
 	}
 
 	#[tokio::test]
@@ -1356,6 +1439,7 @@ mod tests {
 		);
 		let expired: HashSet<_> = (0..3).map(|s| Key::groups("video", s..=s).unwrap()).collect();
 		assert_eq!(stored_groups(&store).await, &referenced(&retained) | &expired);
+		assert_eq!(segments(&store).await, (0..=4).collect::<Vec<_>>());
 		// An upload the crash left uncommitted.
 		store.put_groups("video", &orphan(5)).await.unwrap();
 
@@ -1369,6 +1453,7 @@ mod tests {
 			stored_groups(&store).await.is_superset(&expired),
 			"expired objects outlive the grace, for readers holding the old timeline"
 		);
+		assert_eq!(segments(&store).await, (0..=4).collect::<Vec<_>>());
 
 		writer.control().pacing_track("video").await.unwrap();
 		// The source replays the uncommitted group; it is refused rather than overwritten.
@@ -1386,9 +1471,7 @@ mod tests {
 		assert_eq!(stored_groups(&store).await, referenced(&records));
 		store.get_info("video").await.unwrap();
 		store.get_info(TIMELINE).await.unwrap();
-		for segment in 0..=7 {
-			store.get_segments(TIMELINE, segment).await.unwrap();
-		}
+		assert_eq!(segments(&store).await, vec![7]);
 	}
 
 	#[tokio::test]
@@ -1426,10 +1509,12 @@ mod tests {
 		let result = Writer::new(Store::new(failing, "rec"), source.consume(), config.clone()).await;
 		assert!(matches!(result, Err(Error::Store(_))));
 
-		// A missing timeline object leaves the retained window unrecoverable.
-		store.delete(&Key::segments(TIMELINE, 3).unwrap()).await.unwrap();
+		// A gap in the timeline keys leaves the retained window unrecoverable.
+		let newest = store.get_segments(TIMELINE, 5).await.unwrap();
+		store.put_segments(TIMELINE, 3, &newest).await.unwrap();
 		let result = Writer::new(store.clone(), source.consume(), config).await;
 		assert!(matches!(result, Err(Error::Timeline(_))));
+		assert_eq!(segments(&store).await, vec![3, 5]);
 
 		assert_eq!(stored_groups(&store).await, before);
 	}
@@ -1448,6 +1533,82 @@ mod tests {
 		assert_eq!(checkpoint.range.end, 300);
 		assert!(recovery.orphans.is_empty());
 		assert_eq!(recovery.floors["video"], 299);
+
+		// The oldest stored timeline object is exactly the one recovery starts from.
+		let stored = segments(&store).await;
+		assert!(stored.len() > 1, "the newest checkpoint omits part of the window");
+		assert!(stored[0] > 0, "earlier timeline objects are pruned");
+		assert_eq!(recovery.checkpoints.front().unwrap().0, stored[0]);
+		assert!(recovery.stale.is_empty());
+	}
+
+	/// Yield to the writer until `check` holds.
+	async fn until<F: Future<Output = bool>>(mut check: impl FnMut() -> F) {
+		while !check().await {
+			tokio::task::yield_now().await;
+		}
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_dvr_prunes_timeline_objects_one_grace_after_they_are_unneeded() {
+		let store = Store::new(InMemory::new(), "rec");
+		let source = broadcast::Info::new().produce();
+		let video = track(&source, "video");
+		let grace = Duration::from_secs(10);
+		let config = Config::default().with_retention(Retention::new(Duration::from_secs(2), grace));
+		let writer = Writer::new(store.clone(), source.consume(), config).await.unwrap();
+		writer.control().pacing_track("video").await.unwrap();
+		let run = tokio::spawn(writer.run());
+
+		for sequence in 0..4 {
+			group(&video, sequence, &[sequence * 1000, sequence * 1000 + 500]);
+		}
+		// Segment 3 stays open, so segment 2 is the newest timeline object.
+		until(|| async { segments(&store).await.last() == Some(&2) }).await;
+		assert_eq!(
+			segments(&store).await,
+			vec![0, 1, 2],
+			"unneeded timeline objects outlive the grace, for readers that listed them"
+		);
+
+		tokio::time::sleep(grace).await;
+		until(|| async { segments(&store).await == [2] }).await;
+
+		for sequence in 4..6 {
+			group(&video, sequence, &[sequence * 1000, sequence * 1000 + 500]);
+		}
+		video.finish().unwrap();
+		source.close();
+		run.await.unwrap().unwrap();
+
+		assert_eq!(segments(&store).await, vec![5]);
+		let records = window(&store).await;
+		assert_eq!(ranges(&records, "video"), vec![(3, 3), (4, 4), (5, 5)]);
+		check_objects(&store, &records).await;
+		let recovery = recover(&store, TIMELINE, true).await.unwrap();
+		assert_eq!(recovery.checkpoint.unwrap().records, records);
+	}
+
+	#[tokio::test]
+	async fn a_failed_timeline_delete_keeps_the_keys_consecutive() {
+		let mock = Mock::memory();
+		let store = Store::new(mock.clone(), "rec");
+		let config = Config::default().with_retention(Retention::new(Duration::from_secs(2), Duration::ZERO));
+		let failed = Key::segments(TIMELINE, 1).unwrap();
+		mock.fail_deletes(store.path(&failed).unwrap().as_ref());
+		record(&store, config.clone(), 0..6).await;
+
+		// Pruning stops at the failed object instead of deleting past it.
+		assert_eq!(segments(&store).await, (1..=5).collect::<Vec<_>>());
+		window(&store).await;
+
+		// A restart retries from the oldest stored object.
+		mock.heal();
+		record(&store, config, 6..8).await;
+		assert_eq!(segments(&store).await, vec![7]);
+		let records = window(&store).await;
+		assert_eq!(ranges(&records, "video"), vec![(5, 5), (6, 6), (7, 7)]);
+		check_objects(&store, &records).await;
 	}
 
 	#[tokio::test]

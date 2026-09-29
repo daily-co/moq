@@ -36,6 +36,8 @@ struct State {
 	fail_puts: Vec<String>,
 	/// GETs whose path contains any of these return Not Found.
 	hide_gets: Vec<String>,
+	/// Deletes whose path contains any of these fail.
+	fail_deletes: Vec<String>,
 	/// Streaming listings end with an error after every entry.
 	fail_lists: bool,
 	/// Streaming listings yield entries in descending order, like a backend that promises none.
@@ -94,6 +96,11 @@ impl Mock {
 		self
 	}
 
+	pub fn fail_deletes(&self, pattern: &str) -> &Self {
+		self.state().fail_deletes.push(pattern.to_string());
+		self
+	}
+
 	pub fn fail_lists(&self) -> &Self {
 		self.state().fail_lists = true;
 		self
@@ -109,6 +116,7 @@ impl Mock {
 		let mut state = self.state();
 		state.fail_puts.clear();
 		state.hide_gets.clear();
+		state.fail_deletes.clear();
 		state.fail_lists = false;
 	}
 
@@ -206,7 +214,15 @@ impl ObjectStore for Mock {
 	) -> BoxStream<'static, object_store::Result<Path>> {
 		let state = self.state.clone();
 		let locations = locations
-			.inspect_ok(move |path| state.lock().unwrap().ops.push(Op::Delete(path.to_string())))
+			.and_then(move |path| {
+				let mut state = state.lock().unwrap();
+				state.ops.push(Op::Delete(path.to_string()));
+				let failed = state.fail_deletes.iter().any(|p| path.as_ref().contains(p));
+				futures::future::ready(match failed {
+					true => Err(unsupported("delete")),
+					false => Ok(path),
+				})
+			})
 			.boxed();
 		self.inner.delete_stream(locations)
 	}

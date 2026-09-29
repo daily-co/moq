@@ -352,8 +352,8 @@ async fn an_offline_reader_follows_dvr_expiry() {
 		write(&video, sequence, &frames(sequence));
 	}
 	committed(8).await;
-	// Segments 7 and 8 hold the 2s window.
-	while store.get_groups("video", 6..=6).await.is_ok() {
+	// Segments 7 and 8 hold the 2s window, and the newest timeline object restates both.
+	while store.get_groups("video", 6..=6).await.is_ok() || store.get_segments(TIMELINE, 7).await.is_ok() {
 		tokio::time::sleep(Duration::from_millis(5)).await;
 	}
 
@@ -368,10 +368,11 @@ async fn an_offline_reader_follows_dvr_expiry() {
 			offset: Some(format!("rec/timeline%2Ez/segments/{}", id(1))),
 		}
 	);
-	let segments: Vec<_> = (2..=8)
-		.map(|segment| Op::Get(format!("rec/timeline%2Ez/segments/{}", id(segment))))
-		.collect();
-	assert_eq!(gets, segments, "only the new timeline keys are read");
+	assert_eq!(
+		gets,
+		&[Op::Get(format!("rec/timeline%2Ez/segments/{}", id(8)))],
+		"only the retained timeline key is read"
+	);
 
 	// Expired groups are gone from the index, so they cost no media GET.
 	for sequence in 0..7 {

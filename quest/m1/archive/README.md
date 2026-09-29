@@ -61,10 +61,12 @@ percent-encoded track names, `.info` JSON, the binary envelope, and put/get/list
 `moq_archive::Writer` (`rs/moq-archive/src/writer.rs`) records enrolled tracks
 through `Deferred`, omits failed tracks with `Pending::omit`, stores each
 segment's timeline groups after `Producer::flush`, and expires DVR segments
-with a deletion grace. On a prefix that already holds a recording, it replays the
+with a deletion grace, pruning the oldest timeline objects no checkpoint
+recovery reads. On a prefix that already holds a recording, it replays the
 retained timeline from a checkpoint through `timeline::Producer::resume`, refuses
 groups at or below each track's largest stored group, and a DVR deletes
-unreferenced group objects one grace period after recovery.
+unreferenced group objects and unneeded timeline objects one grace period
+after recovery.
 `moq_archive::Reader` (`rs/moq-archive/src/reader/mod.rs`) replays the timeline onto a
 supplied `broadcast::Producer` and serves FETCH through `track::Dynamic` with a byte-bounded
 object LRU. `Reader::refresh` follows by listing timeline keys after its cursor, so gaps and
@@ -147,7 +149,6 @@ owned by that prerequisite, not duplicated in archive storage.
 - [Paced replay](/quest/m1/archive/paced-replay.md) - a replay pushes its groups to live subscribers on one shared clock, so any live player plays it
 - [Browser archive](/quest/m1/archive/browser.md) - the same contract for browser-published broadcasts
 - [DVR rewind](/quest/m1/archive/dvr.md) - seek through a bounded archive and return to live playback
-- [DVR timeline pruning](/quest/m1/archive/pruning.md) - a DVR deletes timeline objects no retained checkpoint needs
 
 ## Related
 
