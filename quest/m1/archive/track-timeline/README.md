@@ -40,6 +40,8 @@ Decisions:
   reader's cache for the next request.
 - HLS `EXT-X-TARGETDURATION` is fixed for the run, not the observed maximum
   #4280 shipped. This reverses that PR's decision 4 (09-28 merged-PR audit).
+  The target comes from each timeline's declared duration, which replaces the
+  broadcast-wide `durationMax` (09-29 planning).
 
 For triage, not blocking: two Codex P2s arrived after #4280 merged and are
 unanswered. A timeline record whose `sequence` differs from its window index
@@ -51,6 +53,7 @@ leaves two handles on one segmenter
 
 ## Required
 
+- [Timelines declare their segment duration](/quest/m1/archive/track-timeline/declared-duration.md) - each timeline entry declares its segment duration (reported or estimated by the publisher), replacing the root `durationMax`
 - [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - `@moq/hang` publishes and reads the same per-track timelines as Rust
 - [Fixed HLS target duration](/quest/m1/archive/track-timeline/hls-target.md) - one `EXT-X-TARGETDURATION` for the run, and no segment whose rounded `EXTINF` exceeds it
 - [HLS timeline resubscribe](/quest/m1/archive/track-timeline/hls-resubscribe.md) - a transient timeline error re-subscribes instead of freezing the playlists or turning a rendition's segments into gaps

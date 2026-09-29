@@ -3,8 +3,9 @@
 ## Goal
 
 A `moq-hls` media playlist advertises one `EXT-X-TARGETDURATION` for the
-whole run, as RFC 8216 requires, and never lists a segment whose `EXTINF`,
-rounded to the nearest integer, exceeds it (RFC 8216 4.3.3.1).
+whole run, taken from the reference timeline's declared duration, so every
+edge and every reload agree on it. Segments stay one-to-one with timeline
+records: the edge never skips, splits, or renumbers one.
 
 ## Plan
 
@@ -12,29 +13,39 @@ rounded to the nearest integer, exceeds it (RFC 8216 4.3.3.1).
 current window's longest segment (`snapshot_as` in
 `rs/moq-hls/src/export/rendition.rs`), so it rises when a long record arrives
 and falls when that record is evicted. Codex flagged it
-([r4113921580](https://github.com/moq-dev/moq/pull/4280#discussion_r4113921580)),
-and the PR kept the observed maximum as recorded decision 4. The maintainer
-has reversed that decision in the 09-28 merged-PR audit:
+([r4113921580](https://github.com/moq-dev/moq/pull/4280#discussion_r4113921580)).
+The 09-28 audit reversed #4280's decision 4 (the observed maximum), and the
+09-29 planning settled the rest:
 
-- Set the target once, from what the publisher declares: the catalog, or the
-  GOP (keyframe interval) configuration where one is known. Not the catalog's
-  `durationMax` blindly: it is a 10s split ceiling, and advertising it would
-  push every player's live edge back by that much.
-- A segment whose rounded `EXTINF` exceeds the target is refused or split,
-  never listed as is. A 2.4s segment under a 2s target is valid and listed.
-  Which one fits depends on where the long segment comes from (a reference
-  record, or a non-reference rendition's snapped keyframe), so decide per
-  case and say why.
-- If the catalog declares nothing usable, decide whether to refuse the
-  rendition or fix a target from the first segments and hold it; ask the
-  maintainer if neither is clearly right.
+- The target is `ceil` of the reference timeline's declared duration from
+  [Timelines declare their segment duration](/quest/m1/archive/track-timeline/declared-duration.md).
+  Until that timeline's entry is declared, the rendition has no playlist yet.
+- A segment whose rounded `EXTINF` exceeds the target (a GOP that overran the
+  publisher's declared value) is listed anyway, with a rate-limited warning.
+  This deliberately deviates from RFC 8216 4.3.3.1's MUST, because refusing
+  the segment loses content, and splitting or skipping it at the edge breaks
+  the stable media sequence numbers of RFC 8216 6.2.2. Document the
+  deviation. hls.js tolerates it; Apple's mediastreamvalidator flags it.
+- A record the publisher split mid-group at its safety ceiling is listed as
+  its own segment. Stop merging split halves back into one range
+  (`a_frame_split_record_is_not_a_video_boundary` in `spans.rs`). This is legal
+  because moq-hls never emits `EXT-X-INDEPENDENT-SEGMENTS`, so a segment may
+  start without a keyframe.
+- A non-reference rendition keeps the reference record's `EXTINF`, even though
+  its keyframe-snapped content can run longer. The user decided this needs no
+  change.
 
-Replace `target_duration_follows_the_observed_segments` with tests that pin a
-constant target across a window whose segment durations vary, and that cover
-the over-long segment path at the rounding boundary. Hold the target per
+Replace `target_duration_follows_the_observed_segments` with tests that pin
+the declared target across a window whose segment durations vary, and that
+cover an overrun at the rounding boundary (listed, warned). Fix its stale
+comment ("default 1s minimum"; the minimum is 2s). Hold the target per
 playlist URI, not per `Rendition`: `renditions::Producer::sync` replaces the
 `Rendition` on a catalog reconfigure, so test that a reconfigure mid-run
 keeps the original target.
+
+## Required
+
+- [Timelines declare their segment duration](/quest/m1/archive/track-timeline/declared-duration.md) - the declared value the target is taken from
 
 ## Related
 
