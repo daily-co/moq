@@ -194,7 +194,9 @@ export class Broadcast {
 		const origin = effect.get(this.in.origin);
 		if (!origin) return;
 
-		const announced = origin.announced();
+		// Hidden routes count: a service claim under a `.`-named prefix is kept out of listings, but
+		// it still covers the renditions it would produce, and this set is never shown to anyone.
+		const announced = origin.announced(Path.Pattern.all(), { hidden: true });
 		effect.cleanup(() => announced.close());
 		this.#announced.set(new Set());
 
