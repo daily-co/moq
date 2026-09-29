@@ -49,7 +49,7 @@ and `Timelines::track` re-enrolling a name while its old `Recorder` is alive
 leaves two handles on one segmenter
 ([r4117516035](https://github.com/moq-dev/moq/pull/4280#discussion_r4117516035)).
 
-## Quests
+## Required
 
 - [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - `@moq/hang` publishes and reads the same per-track timelines as Rust
 - [Fixed HLS target duration](/quest/m1/archive/track-timeline/hls-target.md) - one `EXT-X-TARGETDURATION` for the run, and no segment longer than it
