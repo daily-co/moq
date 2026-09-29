@@ -4,7 +4,8 @@
 
 A transient error on a rendition's timeline subscription does not turn that
 rendition's remaining segments into `EXT-X-GAP`. The watcher subscribes again
-and keeps resolving segments; only a clean end of the timeline ends its spans.
+and keeps resolving segments. Only a clean end, a malformed timeline, or the
+track or broadcast going away ends its spans.
 
 ## Plan
 
@@ -17,15 +18,22 @@ The agent declined it because the watcher never retries, and named
 re-subscribing as the real fix. The maintainer's decision in the 09-28
 merged-PR audit is to do that re-subscribe.
 
-- Re-subscribe on an error while the broadcast is still live, resuming from
-  the records the spans already hold rather than rebuilding them.
-- Mark the spans ended only on a clean end of the timeline or when the
-  broadcast itself goes away. The concern the decline raised still holds:
-  nothing may park forever (`poll_resolved`, a recording
-  `segments::Consumer`), so a rendition whose timeline never returns must
-  still resolve.
+- Re-subscribe only on a recoverable error (a transport reset, a lost
+  session, the publisher's track aborting) while the broadcast is still live,
+  resuming from the records the spans already hold rather than rebuilding
+  them. A malformed or unsupported timeline (a bad archive timescale, broken
+  JSON or DEFLATE) would replay the same retained record forever, so it fails
+  loud and ends the spans instead.
 - Re-subscribe on the event that makes it possible (the broadcast or track
   being available again), not on a timer.
+- The spans end on a clean end of the timeline, when the broadcast goes
+  away, or when a re-subscribe is refused because the track is no longer
+  published. That last case is the terminal state for a timeline that never
+  returns while the broadcast stays live on other tracks: its remaining rows
+  resolve as gaps. The concern the decline raised still holds, so nothing may
+  park forever (`poll_resolved`, a recording `segments::Consumer`); a
+  re-subscribe is either served, refused, or cut short by the broadcast
+  ending.
 
 Add a regression test where a non-reference rendition's timeline errors and
 comes back, and its later segments resolve to media, not gaps.
