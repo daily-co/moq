@@ -290,9 +290,7 @@ enum SamplerMode {
 	/// Nobody wants stats; sampling is paused.
 	Idle,
 	/// Someone does; sample when the deadline elapses.
-	Polling {
-		deadline: crate::runtime::Deadline<crate::time::Clock>,
-	},
+	Polling { deadline: crate::time::Deadline },
 }
 
 impl<S: crate::transport::poll::Session> Supervisor<S> {
@@ -353,7 +351,7 @@ impl<S: crate::transport::poll::Session> Supervisor<S> {
 		stats.demanded = false;
 		drop(stats);
 		self.mode = SamplerMode::Polling {
-			deadline: crate::runtime::Deadline::after(&self.runtime, Self::POLL_INTERVAL),
+			deadline: crate::time::Deadline::after(&self.runtime, Self::POLL_INTERVAL),
 		};
 	}
 
