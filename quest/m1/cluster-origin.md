@@ -34,5 +34,5 @@ the downstream subscription rather than splicing the survivor's objects.
 
 ## Related
 
-- [Wildcard](/quest/m1/wildcard/README.md) - spreading and the lite-07 reply
+- [Wildcard](/quest/m0/wildcard/README.md) - spreading and the lite-07 reply
   origin landed there
