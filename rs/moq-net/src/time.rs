@@ -1,8 +1,6 @@
 //! Caller-supplied time for protocol and model drivers.
 //!
 //! Drivers take the current [`Instant`] on every poll and never read a clock.
-//! Inside the crate, each driver's [`Clock`] holds the latest supplied instant
-//! and the [`Deadline`]s armed against it.
 
 use crate::Error;
 use std::{
