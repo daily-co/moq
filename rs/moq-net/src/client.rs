@@ -1,6 +1,4 @@
 use crate::origin;
-#[cfg(test)]
-use crate::runtime::Timers;
 use crate::time::{Clock, Instant};
 use crate::{
 	ALPN_14, ALPN_15, ALPN_16, ALPN_17, ALPN_18, ALPN_19, ALPN_20, ALPN_21, ALPN_22, ALPN_LITE, ALPN_LITE_03,
@@ -783,7 +781,7 @@ mod tests {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(client.connect(runtime.now(), fake.clone())).unwrap();
 		assert_eq!(session.version(), Version::Lite(lite::Version::Lite04));
 
@@ -806,7 +804,7 @@ mod tests {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(client.connect(runtime.now(), fake.clone())).unwrap();
 		let clone = session.clone();
 
@@ -840,7 +838,7 @@ mod tests {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, driver) = futures::executor::block_on(client.connect(runtime.now(), fake.clone())).unwrap();
 
 		drop(driver);
@@ -1003,7 +1001,7 @@ mod tests {
 		};
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(client.connect_lite(runtime.now(), local)).unwrap();
 		assert!(driver.poll(runtime.now(), &kio::Waiter::noop()).is_ok());
 
@@ -1026,7 +1024,7 @@ mod tests {
 		};
 		let server = crate::Server::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(server.accept_lite(runtime.now(), local)).unwrap();
 		assert_eq!(session.version(), Version::Lite(lite::Version::Lite04));
 		assert!(driver.poll(runtime.now(), &kio::Waiter::noop()).is_ok());
@@ -1047,7 +1045,7 @@ mod tests {
 			_local: std::rc::Rc::new(()),
 		};
 		let client = Client::new();
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let result = futures::executor::block_on(client.connect_lite(runtime.now(), local));
 		assert!(matches!(result, Err(Error::Version)));
 	}
