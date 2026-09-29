@@ -884,7 +884,7 @@ async fn watch_spans(
 	window: Option<Duration>,
 ) {
 	let result: Result<()> = async {
-		let mut timeline = moq_mux::timeline::Consumer::<()>::subscribe(&broadcast, &section, &track).await?;
+		let mut timeline = super::timeline::Follower::subscribe(&broadcast, &section, &track).await?;
 		while let Some(event) = timeline.next().await? {
 			match event {
 				moq_mux::timeline::Event::Push { entry, .. } => spans.push(entry, window),
@@ -897,7 +897,7 @@ async fn watch_spans(
 	}
 	.await;
 	if let Err(err) = result {
-		tracing::warn!(%track, %err, "rendition timeline ended with an error");
+		tracing::error!(%track, %err, "rendition timeline failed; its remaining segments are gaps");
 	}
 	spans.end();
 }

@@ -32,6 +32,7 @@ mod mpd;
 mod playlist;
 mod rendition;
 mod spans;
+mod timeline;
 mod upstream;
 
 pub mod renditions;
@@ -434,10 +435,10 @@ async fn watch_timeline(
 		// The timeline finished cleanly: the publisher is done, so every window can end
 		// (ENDLIST) and recording cursors drain to completion.
 		Ok(()) => renditions.end_windows(),
-		// A transient error (subscription reset, relay hiccup): don't mark the windows ended;
-		// the serve path keeps serving the frozen windows.
+		// A malformed timeline, or one that can't be subscribed again: don't mark the windows
+		// ended; the serve path keeps serving the frozen windows.
 		Err(err) => {
-			tracing::warn!(track = %reference.1, %err, "timeline watcher error; leaving the playlists live")
+			tracing::error!(track = %reference.1, %err, "timeline watcher failed; freezing the playlists")
 		}
 	}
 	// The timeline stream is over either way: close so recording cursors terminate instead of
@@ -451,7 +452,7 @@ async fn watch(
 	reference: &Reference,
 	renditions: &renditions::Fanout,
 ) -> crate::Result<()> {
-	let mut timeline = moq_mux::timeline::Consumer::<()>::subscribe(broadcast, section, &reference.1).await?;
+	let mut timeline = timeline::Follower::subscribe(broadcast, section, &reference.1).await?;
 	while let Some(event) = timeline.next().await? {
 		match event {
 			moq_mux::timeline::Event::Push { index, entry } => renditions.push(index, entry, reference),
@@ -2538,5 +2539,201 @@ mod tests {
 			.await
 			.expect("renditions cursor resolves");
 		assert!(ended.is_none(), "renditions cursor ends when the broadcast closes");
+	}
+
+	/// A two-second GOP record: record `n` covers group `n` from `2n` seconds.
+	fn gop(sequence: u64) -> hang::timeline::Record {
+		hang::timeline::Record::new(
+			sequence,
+			sequence * 2_000,
+			2_000,
+			hang::timeline::Position::group(sequence),
+			hang::timeline::Position::group(sequence + 1),
+		)
+	}
+
+	/// A `video0` reference and a `video1` rendition over hand-published timelines, reconciled and
+	/// watched the way `watch_catalog` does. The broadcast's handler keeps a timeline's re-subscribe
+	/// waiting until the test publishes it again.
+	struct Resubscribe {
+		broadcast: moq_net::broadcast::Producer,
+		_handler: moq_net::broadcast::Dynamic,
+		renditions: renditions::Producer,
+		watcher: tokio::task::JoinHandle<()>,
+	}
+
+	impl Resubscribe {
+		fn new(mut archive: hang::catalog::Archive) -> Self {
+			let broadcast = moq_net::broadcast::Info::new().produce();
+			let handler = broadcast.dynamic();
+			let upstream = Upstream {
+				source: moq_mux::Source::new(produce_origin().consume(), "live"),
+				broadcast: broadcast.consume(),
+			};
+
+			let mut catalog = moq_mux::catalog::hang::Catalog::default();
+			for name in ["video0", "video1"] {
+				catalog.video.renditions.insert(name.to_string(), video_config());
+				archive
+					.timelines
+					.insert(name.to_string(), hang::timeline::default_name(name));
+			}
+			catalog.archive = Some(archive.clone());
+
+			let renditions = renditions::Producer::new(Config::default().window);
+			if durable(&archive) {
+				renditions.fanout().unbound();
+			}
+			renditions.sync(&upstream, &catalog);
+			let watcher = tokio::spawn(watch_timeline(
+				upstream.broadcast.clone(),
+				archive,
+				reference(&catalog).unwrap(),
+				renditions.fanout(),
+			));
+			Self {
+				broadcast,
+				_handler: handler,
+				renditions,
+				watcher,
+			}
+		}
+
+		/// Publish `track`'s timeline, continuing `records` when set. Returns the track, to cut
+		/// it off, with the timeline writing to it.
+		fn publish(
+			&self,
+			track: &str,
+			records: Option<Vec<hang::timeline::Record>>,
+		) -> (moq_net::track::Producer, moq_mux::timeline::Producer) {
+			let track = self
+				.broadcast
+				.create_track(hang::timeline::default_name(track), moq_mux::timeline::Producer::info())
+				.unwrap();
+			let timeline = match records {
+				Some(records) => {
+					let range = records.first().unwrap().sequence..records.last().unwrap().sequence + 1;
+					let checkpoint = moq_json::window::Checkpoint { range, records };
+					moq_mux::timeline::Producer::resume(track.clone(), &checkpoint).unwrap()
+				}
+				None => moq_mux::timeline::Producer::new(track.clone()),
+			};
+			(track, timeline)
+		}
+
+		fn snapshot(&self, name: &str) -> playlist::Snapshot {
+			self.renditions.get(Kind::Video, name).unwrap().snapshot()
+		}
+
+		/// Wait until `name` lists segment `last`.
+		async fn listed(&self, name: &str, last: u64) -> playlist::Snapshot {
+			for _ in 0..500 {
+				let snapshot = self.snapshot(name);
+				if snapshot.segments.last().is_some_and(|s| s.segment >= last) {
+					return snapshot;
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+			panic!("{name} never listed segment {last}");
+		}
+	}
+
+	impl Drop for Resubscribe {
+		fn drop(&mut self) {
+			self.watcher.abort();
+		}
+	}
+
+	/// The timeline's publisher loses its session: the track and its open group fail.
+	fn cut(track: moq_net::track::Producer, timeline: moq_mux::timeline::Producer) {
+		drop(timeline);
+		track.abort(moq_net::Error::SessionClosed).unwrap();
+	}
+
+	fn numbers(snapshot: &playlist::Snapshot) -> Vec<u64> {
+		snapshot.segments.iter().map(|s| s.segment).collect()
+	}
+
+	fn gaps(snapshot: &playlist::Snapshot) -> Vec<u64> {
+		snapshot.segments.iter().filter(|s| s.gap).map(|s| s.segment).collect()
+	}
+
+	// A transient error on a rendition's own timeline subscribes again. Its segments stay pending
+	// through the outage and resolve to media afterwards, rather than every row past its last
+	// record turning into an `EXT-X-GAP`.
+	#[tokio::test(start_paused = true)]
+	async fn a_rendition_timeline_error_resubscribes_instead_of_listing_gaps() {
+		let test = Resubscribe::new(hang::catalog::Archive::new());
+		let (_reference, mut video0) = test.publish("video0", None);
+		let (track, mut video1) = test.publish("video1", None);
+		for sequence in 0..4 {
+			video0.push(&gop(sequence)).unwrap();
+			video1.push(&gop(sequence)).unwrap();
+		}
+		// A segment resolves once the rendition's timeline is a snap tolerance past its end.
+		assert_eq!(numbers(&test.listed("video1", 2).await), [0, 1, 2]);
+
+		cut(track, video1);
+		for sequence in 4..7 {
+			video0.push(&gop(sequence)).unwrap();
+		}
+		tokio::time::sleep(Duration::from_secs(60)).await;
+		let outage = test.snapshot("video1");
+		assert_eq!(numbers(&outage), [0, 1, 2], "the rest stays pending through the outage");
+		assert_eq!(gaps(&outage), [] as [u64; 0]);
+
+		let (_track, mut video1) = test.publish("video1", Some((0..4).map(gop).collect()));
+		for sequence in 4..7 {
+			video1.push(&gop(sequence)).unwrap();
+		}
+		let resumed = test.listed("video1", 5).await;
+		assert_eq!(numbers(&resumed), [0, 1, 2, 3, 4, 5]);
+		assert_eq!(
+			gaps(&resumed),
+			[] as [u64; 0],
+			"the segments after the outage resolve to media"
+		);
+	}
+
+	// A transient error on the reference timeline subscribes again, and every playlist keeps
+	// advancing. The timeline is durable and longer than a group header restates
+	// (`CHECKPOINT_RECORDS`), and the source pops records during the outage: those rows go,
+	// while the retained rows the header omits stay listed.
+	#[tokio::test(start_paused = true)]
+	async fn a_reference_timeline_error_resubscribes_and_every_playlist_advances() {
+		let mut archive = hang::catalog::Archive::new();
+		archive.store = Some("https://objects.example/rec/".parse().unwrap());
+		let test = Resubscribe::new(archive);
+		let (track, mut video0) = test.publish("video0", None);
+		let (_track, mut video1) = test.publish("video1", None);
+		// Let the watchers read each record as it lands, so none falls a whole header behind.
+		for sequence in 0..300 {
+			video0.push(&gop(sequence)).unwrap();
+			video1.push(&gop(sequence)).unwrap();
+			settle().await;
+		}
+		let before = test.listed("video0", 299).await;
+		assert_eq!(numbers(&before), (0..300).collect::<Vec<_>>());
+
+		cut(track, video0);
+		tokio::time::sleep(Duration::from_secs(60)).await;
+		assert_eq!(
+			numbers(&test.snapshot("video0")),
+			numbers(&before),
+			"the playlist holds"
+		);
+		for sequence in 300..303 {
+			video1.push(&gop(sequence)).unwrap();
+		}
+		// The source popped ten records while the watcher was away.
+		let (_track, mut video0) = test.publish("video0", Some((10..300).map(gop).collect()));
+		video0.push(&gop(300)).unwrap();
+
+		let reference = test.listed("video0", 300).await;
+		assert_eq!(numbers(&reference), (10..=300).collect::<Vec<_>>());
+		assert_eq!(reference.media_sequence, 10);
+		let rendition = test.listed("video1", 300).await;
+		assert_eq!(numbers(&rendition), (10..=300).collect::<Vec<_>>());
+		assert_eq!(gaps(&rendition), [] as [u64; 0]);
 	}
 }
