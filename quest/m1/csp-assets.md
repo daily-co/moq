@@ -34,9 +34,10 @@ Decided in planning:
   bundler never downloads it. Single-file builds (esbuild without splitting,
   Bun, IIFE) inline it, which is about 12 KB minified of dead weight in hosted
   mode only. Accepted over doubling the exports.
-- Hosted-mode files load from `new URL(<fixed name>, base)`. Never
-  `import.meta.url`: the default path must not reference an asset that some
-  bundlers drop.
+- Hosted-mode files load from `new URL(<fixed name>, base)`, with the base
+  first resolved against `document.baseURI`, so a root-relative `/moq/`
+  works (`new URL(name, "/moq/")` alone throws). Never `import.meta.url`:
+  the default path must not reference an asset that some bundlers drop.
 - API: one global base URL per package, set once before playback (e.g.
   `Watch.assets("/moq/")` and `Publish.assets("/moq/")`; the exact name is for
   review). Assets are app-wide, so nothing threads through `Player`, the
@@ -59,8 +60,12 @@ Decided in planning:
   - A manual bundler-matrix script, not wired into CI or nightly. This is the
     maintainer's call, an exception to the repo's CI rule. It builds a
     consumer with Vite, webpack, esbuild IIFE, and Bun, then loads each in
-    Chromium, in default mode (no CSP) and hosted mode (strict CSP). Report
-    its results in the PR.
+    Chromium, in default mode (no CSP) and hosted mode (strict CSP). The page
+    loads all three assets directly (both worklets through `addModule`, and
+    the capture worker through a spawn and a message round trip). Chromium's
+    publish path uses the main-thread `MediaStreamTrackProcessor` and never
+    spawns the worker, and the worker path silently falls back when the
+    spawn fails. Report the results in the PR.
 
 Reuse from #4485 where it fits: the `resolveFileUrl`/`emitFile` plumbing in
 `js/common/vite-plugin-worklet.ts` and its Playwright CSP page, minus the
