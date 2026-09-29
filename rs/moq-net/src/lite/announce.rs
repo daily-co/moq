@@ -223,7 +223,7 @@ impl Encode<Version> for AnnounceBroadcast<'_> {
 			};
 			w.varint(VarInt::from(typ))?;
 
-			let start = w.position();
+			let prefix = w.prefix_varint();
 			match self {
 				Self::Active { suffix, hops, cost } => {
 					suffix.encode(w, version)?;
@@ -238,12 +238,12 @@ impl Encode<Version> for AnnounceBroadcast<'_> {
 				}
 				Self::Ended { .. } | Self::Skipped => unreachable!("refused above"),
 			}
-			return w.prefix_varint(start);
+			return w.fill(prefix);
 		}
 
 		// Older versions: a single ANNOUNCE_BROADCAST message, size-prefixed, with the
 		// status carried inside the body.
-		let start = w.position();
+		let prefix = w.prefix_varint();
 		match self {
 			// The cost is a lite-06 addition, so it is simply not on the wire here.
 			Self::Active { suffix, hops, .. } => {
@@ -265,7 +265,7 @@ impl Encode<Version> for AnnounceBroadcast<'_> {
 				return Err(EncodeError::Version);
 			}
 		}
-		w.prefix_varint(start)
+		w.fill(prefix)
 	}
 }
 

@@ -224,69 +224,167 @@ impl VarInt {
 		Self(((hi as u64) << 32) | lo as u64)
 	}
 
-	/// Decode from the front of `buf`, returning the value and the bytes it took.
-	pub(super) fn decode_form(buf: &[u8], form: Form) -> Result<(Self, usize), DecodeError> {
-		let Some(&first) = buf.first() else {
-			return Err(DecodeError::Short);
-		};
-
-		let (len, head) = match form {
-			Form::Quic => (1usize << (first >> 6), first & 0x3f),
-			Form::LeadingOnes { seven } => {
-				let ones = first.leading_ones();
-				if ones == 6 && !seven {
-					return Err(DecodeError::InvalidValue);
-				}
-				// `0x7f >> 8` would overflow, and there are no value bits left anyway.
-				let head = if ones >= 7 { 0 } else { first & (0x7f >> ones) };
-				(ones as usize + 1, head)
-			}
-		};
-
-		let Some(rest) = buf.get(1..len) else {
-			return Err(DecodeError::Short);
-		};
-
-		let mut hi = 0u32;
-		let mut lo = head as u32;
-		for &byte in rest {
-			hi = (hi << 8) | (lo >> 24);
-			lo = (lo << 8) | byte as u32;
-		}
-
-		Ok((Self::from_halves(hi, lo), len))
-	}
-
-	/// The minimal encoding in the given form: the bytes, and how many of them are used.
-	///
-	/// Fails past [`Self::MAX_QUIC`] in the QUIC form.
-	pub(super) fn encode_form(self, form: Form) -> Result<([u8; 9], usize), BoundsExceeded> {
-		let (hi, lo) = self.to_halves();
-		let [a, b, c, d] = lo.to_be_bytes();
-		let [e, f, g, h] = hi.to_be_bytes();
-
-		Ok(match form {
-			Form::Quic if hi == 0 && lo < 1 << 6 => ([d, 0, 0, 0, 0, 0, 0, 0, 0], 1),
-			Form::Quic if hi == 0 && lo < 1 << 14 => ([0x40 | c, d, 0, 0, 0, 0, 0, 0, 0], 2),
-			Form::Quic if hi == 0 && lo < 1 << 30 => ([0x80 | a, b, c, d, 0, 0, 0, 0, 0], 4),
-			Form::Quic if hi < 1 << 30 => ([0xc0 | e, f, g, h, a, b, c, d, 0], 8),
-			Form::Quic => return Err(BoundsExceeded),
-			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 7 => ([d, 0, 0, 0, 0, 0, 0, 0, 0], 1),
-			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 14 => ([0x80 | c, d, 0, 0, 0, 0, 0, 0, 0], 2),
-			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 21 => ([0xc0 | b, c, d, 0, 0, 0, 0, 0, 0], 3),
-			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 28 => ([0xe0 | a, b, c, d, 0, 0, 0, 0, 0], 4),
-			Form::LeadingOnes { .. } if hi < 1 << 3 => ([0xf0 | h, a, b, c, d, 0, 0, 0, 0], 5),
-			Form::LeadingOnes { .. } if hi < 1 << 10 => ([0xf8 | g, h, a, b, c, d, 0, 0, 0], 6),
-			// The 7-byte form is skipped: one byte longer, but legal on every draft.
-			Form::LeadingOnes { .. } if hi < 1 << 24 => ([0xfe, f, g, h, a, b, c, d, 0], 8),
-			Form::LeadingOnes { .. } => ([0xff, e, f, g, h, a, b, c, d], 9),
-		})
-	}
-
 	/// The bytes this takes on the wire in the given form, or [`BoundsExceeded`] if it
 	/// does not fit.
 	pub(crate) fn size(self, form: Form) -> Result<usize, BoundsExceeded> {
-		Ok(self.encode_form(form)?.1)
+		let (hi, lo) = self.to_halves();
+		Ok(match form {
+			Form::Quic if hi == 0 && lo < 1 << 6 => 1,
+			Form::Quic if hi == 0 && lo < 1 << 14 => 2,
+			Form::Quic if hi == 0 && lo < 1 << 30 => 4,
+			Form::Quic if hi < 1 << 30 => 8,
+			Form::Quic => return Err(BoundsExceeded),
+			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 7 => 1,
+			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 14 => 2,
+			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 21 => 3,
+			Form::LeadingOnes { .. } if hi == 0 && lo < 1 << 28 => 4,
+			Form::LeadingOnes { .. } if hi < 1 << 3 => 5,
+			Form::LeadingOnes { .. } if hi < 1 << 10 => 6,
+			// The 7-byte form is skipped: one byte longer, but legal on every draft.
+			Form::LeadingOnes { .. } if hi < 1 << 24 => 8,
+			Form::LeadingOnes { .. } => 9,
+		})
+	}
+
+	/// Append the minimal encoding in the given form.
+	///
+	/// Fails past [`Self::MAX_QUIC`] in the QUIC form, writing nothing.
+	#[inline]
+	pub(super) fn write(self, form: Form, out: &mut Vec<u8>) -> Result<(), BoundsExceeded> {
+		match form {
+			Form::Quic => self.write_quic(out),
+			Form::LeadingOnes { .. } => {
+				self.write_leading_ones(out);
+				Ok(())
+			}
+		}
+	}
+
+	// Each arm below is a fixed-size write or read, which is what keeps the codec as fast
+	// as a hand-rolled `put_u16`/`get_u32`.
+
+	#[inline]
+	fn write_quic(self, out: &mut Vec<u8>) -> Result<(), BoundsExceeded> {
+		let (hi, lo) = self.to_halves();
+		if hi == 0 && lo < 1 << 6 {
+			out.push(lo as u8);
+		} else if hi == 0 && lo < 1 << 14 {
+			out.extend_from_slice(&(0x4000 | lo as u16).to_be_bytes());
+		} else if hi == 0 && lo < 1 << 30 {
+			out.extend_from_slice(&(0x8000_0000 | lo).to_be_bytes());
+		} else if hi < 1 << 30 {
+			let [a, b, c, d] = (0xc000_0000 | hi).to_be_bytes();
+			let [e, f, g, h] = lo.to_be_bytes();
+			out.extend_from_slice(&[a, b, c, d, e, f, g, h]);
+		} else {
+			return Err(BoundsExceeded);
+		}
+		Ok(())
+	}
+
+	#[inline]
+	fn write_leading_ones(self, out: &mut Vec<u8>) {
+		let (hi, lo) = self.to_halves();
+		let [a, b, c, d] = lo.to_be_bytes();
+		if hi == 0 && lo < 1 << 7 {
+			out.push(d);
+		} else if hi == 0 && lo < 1 << 14 {
+			out.extend_from_slice(&[0x80 | c, d]);
+		} else if hi == 0 && lo < 1 << 21 {
+			out.extend_from_slice(&[0xc0 | b, c, d]);
+		} else if hi == 0 && lo < 1 << 28 {
+			out.extend_from_slice(&[0xe0 | a, b, c, d]);
+		} else if hi < 1 << 3 {
+			out.extend_from_slice(&[0xf0 | hi as u8, a, b, c, d]);
+		} else if hi < 1 << 10 {
+			out.extend_from_slice(&[0xf8 | (hi >> 8) as u8, hi as u8, a, b, c, d]);
+		} else if hi < 1 << 24 {
+			// The 7-byte form is skipped: one byte longer, but legal on every draft.
+			let [_, f, g, h] = hi.to_be_bytes();
+			out.extend_from_slice(&[0xfe, f, g, h, a, b, c, d]);
+		} else {
+			let [e, f, g, h] = hi.to_be_bytes();
+			out.extend_from_slice(&[0xff, e, f, g, h, a, b, c, d]);
+		}
+	}
+
+	/// Decode from the front of `buf`, returning the value and the rest of `buf`.
+	#[inline]
+	pub(super) fn read(buf: &[u8], form: Form) -> Result<(Self, &[u8]), DecodeError> {
+		match form {
+			Form::Quic => Self::read_quic(buf),
+			Form::LeadingOnes { seven } => Self::read_leading_ones(buf, seven),
+		}
+	}
+
+	#[inline]
+	fn read_quic(buf: &[u8]) -> Result<(Self, &[u8]), DecodeError> {
+		let Some((&first, rest)) = buf.split_first() else {
+			return Err(DecodeError::Short);
+		};
+
+		let be = u32::from_be_bytes;
+		Ok(match first >> 6 {
+			0 => (Self::from_u32(first as u32), rest),
+			1 => {
+				let ([a, b], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+				(Self::from_u32(be([0, 0, a & 0x3f, *b])), rest)
+			}
+			2 => {
+				let ([a, b, c, d], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+				(Self::from_u32(be([a & 0x3f, *b, *c, *d])), rest)
+			}
+			_ => {
+				let ([a, b, c, d, lo @ ..], rest) = buf.split_first_chunk::<8>().ok_or(DecodeError::Short)?;
+				(Self::from_halves(be([a & 0x3f, *b, *c, *d]), be(*lo)), rest)
+			}
+		})
+	}
+
+	#[inline]
+	fn read_leading_ones(buf: &[u8], seven: bool) -> Result<(Self, &[u8]), DecodeError> {
+		let Some((&first, rest)) = buf.split_first() else {
+			return Err(DecodeError::Short);
+		};
+
+		let be = u32::from_be_bytes;
+		Ok(match first.leading_ones() {
+			0 => (Self::from_u32(first as u32), rest),
+			1 => {
+				let ([a, b], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+				(Self::from_u32(be([0, 0, a & 0x3f, *b])), rest)
+			}
+			2 => {
+				let ([a, b, c], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+				(Self::from_u32(be([0, a & 0x1f, *b, *c])), rest)
+			}
+			3 => {
+				let ([a, b, c, d], rest) = buf.split_first_chunk().ok_or(DecodeError::Short)?;
+				(Self::from_u32(be([a & 0x0f, *b, *c, *d])), rest)
+			}
+			4 => {
+				let ([a, lo @ ..], rest) = buf.split_first_chunk::<5>().ok_or(DecodeError::Short)?;
+				(Self::from_halves((a & 0x07) as u32, be(*lo)), rest)
+			}
+			5 => {
+				let ([a, b, lo @ ..], rest) = buf.split_first_chunk::<6>().ok_or(DecodeError::Short)?;
+				(Self::from_halves(be([0, 0, a & 0x03, *b]), be(*lo)), rest)
+			}
+			// 1111110x: the 7-byte form, which draft-17 forbids.
+			6 if !seven => return Err(DecodeError::InvalidValue),
+			6 => {
+				let ([a, b, c, lo @ ..], rest) = buf.split_first_chunk::<7>().ok_or(DecodeError::Short)?;
+				(Self::from_halves(be([0, a & 0x01, *b, *c]), be(*lo)), rest)
+			}
+			7 => {
+				let ([_, b, c, d, lo @ ..], rest) = buf.split_first_chunk::<8>().ok_or(DecodeError::Short)?;
+				(Self::from_halves(be([0, *b, *c, *d]), be(*lo)), rest)
+			}
+			_ => {
+				let ([_, hi @ .., e, f, g, h], rest) = buf.split_first_chunk::<9>().ok_or(DecodeError::Short)?;
+				(Self::from_halves(be(*hi), be([*e, *f, *g, *h])), rest)
+			}
+		})
 	}
 
 	/// Decode a QUIC-style varint (2-bit length tag in top bits).
@@ -303,18 +401,28 @@ impl VarInt {
 		let mut buf = [0u8; 8];
 		r.copy_to_slice(&mut buf[..len]);
 
-		Ok(Self::decode_form(&buf[..len], Form::Quic)?.0)
+		Ok(Self::read(&buf[..len], Form::Quic)?.0)
 	}
 
 	/// Encode a QUIC-style varint (2-bit length tag in top bits).
 	///
 	/// Fails with [`EncodeError::BoundsExceeded`] past [`Self::MAX_QUIC`].
 	pub fn encode_quic<W: bytes::BufMut>(&self, w: &mut W) -> Result<(), EncodeError> {
-		let (buf, len) = self.encode_form(Form::Quic)?;
+		let len = self.size(Form::Quic)?;
 		if w.remaining_mut() < len {
 			return Err(EncodeError::Short);
 		}
-		w.put_slice(&buf[..len]);
+
+		let (hi, lo) = self.to_halves();
+		match len {
+			1 => w.put_u8(lo as u8),
+			2 => w.put_u16(0x4000 | lo as u16),
+			4 => w.put_u32(0x8000_0000 | lo),
+			_ => {
+				w.put_u32(0xc000_0000 | hi);
+				w.put_u32(lo);
+			}
+		}
 		Ok(())
 	}
 }
@@ -339,8 +447,10 @@ mod tests {
 	const DRAFT18: Form = Form::LeadingOnes { seven: true };
 
 	fn encode(value: VarInt, form: Form) -> Result<Vec<u8>, BoundsExceeded> {
-		let (buf, len) = value.encode_form(form)?;
-		Ok(buf[..len].to_vec())
+		let mut buf = Vec::new();
+		value.write(form, &mut buf)?;
+		assert_eq!(buf.len(), value.size(form)?, "size disagrees with the encoding");
+		Ok(buf)
 	}
 
 	/// Test vectors from the draft-17 spec (Table 2: Example Integer Encodings),
@@ -365,13 +475,13 @@ mod tests {
 		];
 
 		for (bytes, expected) in cases {
-			let (decoded, len) = VarInt::decode_form(bytes, DRAFT17).expect("decode should succeed");
+			let (decoded, rest) = VarInt::read(bytes, DRAFT17).expect("decode should succeed");
 			assert_eq!(
 				decoded.into_inner(),
 				*expected,
 				"decode mismatch for bytes {bytes:02x?}"
 			);
-			assert_eq!(len, bytes.len(), "all bytes should be consumed for {bytes:02x?}");
+			assert!(rest.is_empty(), "all bytes should be consumed for {bytes:02x?}");
 
 			// Skip the non-minimal encoding (0x8025 for 37); we only emit the minimal one.
 			if bytes.len() == 1 || *expected != 37 {
@@ -385,7 +495,7 @@ mod tests {
 	#[test]
 	fn leading_ones_invalid_0xfc() {
 		assert!(
-			matches!(VarInt::decode_form(&[0xFC], DRAFT17), Err(DecodeError::InvalidValue)),
+			matches!(VarInt::read(&[0xFC], DRAFT17), Err(DecodeError::InvalidValue)),
 			"0xFC should be rejected as invalid on draft-17"
 		);
 	}
@@ -409,7 +519,7 @@ mod tests {
 				"unexpected encoded length for value {value}"
 			);
 
-			let (decoded, _) = VarInt::decode_form(&encoded, DRAFT17).expect("leading-ones decode should succeed");
+			let (decoded, _) = VarInt::read(&encoded, DRAFT17).expect("leading-ones decode should succeed");
 			assert_eq!(decoded.into_inner(), value, "round-trip mismatch for value {value}");
 		}
 	}
@@ -427,8 +537,8 @@ mod tests {
 						assert!(value > VarInt::MAX_QUIC);
 						continue;
 					};
-					let (decoded, len) = VarInt::decode_form(&encoded, form).unwrap();
-					assert_eq!((decoded, len), (value, encoded.len()), "{form:?} {value}");
+					let (decoded, rest) = VarInt::read(&encoded, form).unwrap();
+					assert_eq!((decoded, rest), (value, &[][..]), "{form:?} {value}");
 				}
 			}
 		}
@@ -453,14 +563,14 @@ mod tests {
 		for value in [(1u64 << 62) - 1, 1u64 << 62, u64::MAX] {
 			let encoded = encode(VarInt::from(value), DRAFT18).unwrap();
 			assert_eq!(encoded.len(), 9);
-			assert_eq!(VarInt::decode_form(&encoded, DRAFT18).unwrap().0.into_inner(), value);
+			assert_eq!(VarInt::read(&encoded, DRAFT18).unwrap().0.into_inner(), value);
 		}
 	}
 
 	#[test]
 	fn draft17_rejects_7_byte_varint() {
 		// 1111110x prefix: invalid on draft-17.
-		let err = VarInt::decode_form(&[0xFC, 0, 0, 0, 0, 0, 0], DRAFT17).unwrap_err();
+		let err = VarInt::read(&[0xFC, 0, 0, 0, 0, 0, 0], DRAFT17).unwrap_err();
 		assert!(matches!(err, DecodeError::InvalidValue));
 	}
 
@@ -520,7 +630,7 @@ mod tests {
 		for shift in (0..48).step_by(8).rev() {
 			bytes.push(((value >> shift) & 0xFF) as u8);
 		}
-		let (decoded, _) = VarInt::decode_form(&bytes, DRAFT18).unwrap();
+		let (decoded, _) = VarInt::read(&bytes, DRAFT18).unwrap();
 		assert_eq!(decoded.into_inner(), value);
 	}
 

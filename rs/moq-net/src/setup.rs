@@ -54,9 +54,9 @@ impl Encode<Version> for Setup {
 	fn encode(&self, w: &mut Encoder<'_>, v: Version) -> Result<(), EncodeError> {
 		Self::check_version(v);
 		w.varint(VarInt::from(SETUP_V17))?;
-		let start = w.position();
+		let prefix = w.prefix_u16();
 		w.slice(&self.parameters);
-		w.prefix_u16(start)
+		w.fill(prefix)
 	}
 }
 
@@ -154,9 +154,9 @@ impl Encode<Version> for Client {
 	/// Encode a client setup message (draft-14 through draft-16 only).
 	fn encode(&self, w: &mut Encoder<'_>, v: Version) -> Result<(), EncodeError> {
 		w.u8(CLIENT_SETUP);
-		let start = w.position();
+		let prefix = prefix_body(w, v)?;
 		self.encode_inner(w, v)?;
-		prefix_body(w, v, start)
+		w.fill(prefix)
 	}
 }
 
@@ -170,11 +170,11 @@ fn decode_body<'a>(r: &mut Decoder<'a>, v: Version) -> Result<Decoder<'a>, Decod
 	r.sub(size)
 }
 
-/// Size-prefix a pre-draft-17 SETUP body written since `start`.
-fn prefix_body(w: &mut Encoder<'_>, v: Version, start: usize) -> Result<(), EncodeError> {
+/// Reserve the size prefix of a pre-draft-17 SETUP body.
+fn prefix_body(w: &mut Encoder<'_>, v: Version) -> Result<coding::Prefix, EncodeError> {
 	match SetupVersion::from_version(v) {
-		SetupVersion::Draft14 | SetupVersion::Draft15Plus => w.prefix_u16(start),
-		SetupVersion::LiteLegacy => w.prefix_varint(start),
+		SetupVersion::Draft14 | SetupVersion::Draft15Plus => Ok(w.prefix_u16()),
+		SetupVersion::LiteLegacy => Ok(w.prefix_varint()),
 		SetupVersion::Modern | SetupVersion::Unsupported => Err(EncodeError::Version),
 	}
 }
@@ -207,9 +207,9 @@ impl Encode<Version> for Server {
 	/// Encode a server setup message (draft-14 through draft-16 only).
 	fn encode(&self, w: &mut Encoder<'_>, v: Version) -> Result<(), EncodeError> {
 		w.u8(SERVER_SETUP);
-		let start = w.position();
+		let prefix = prefix_body(w, v)?;
 		self.encode_inner(w, v)?;
-		prefix_body(w, v, start)
+		w.fill(prefix)
 	}
 }
 

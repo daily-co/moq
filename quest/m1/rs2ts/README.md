@@ -30,9 +30,11 @@ Decided in planning (2026-09-27), with the spike data in
   and bytes out, no runtime. The async helper methods move behind an `async`
   cargo feature; rs2ts reads the crate without it and JS reimplements the
   helpers with Promises. No second crate.
-- Varints stay 62-bit on the wire; the spec is not bounded to 2^53. Rust's
-  `VarInt` newtype carries Encode/Decode and JS gets a matching `VarInt` type
-  with checked conversion to and from `number`.
+- `VarInt` holds the full 64-bit range; the spec is not bounded to 2^53. The
+  leading-ones form (moq-transport draft-17+) carries all of it, and the QUIC
+  form (moq-lite, drafts 14-16) refuses anything past 2^62 - 1 rather than
+  truncating. Rust's `VarInt` newtype carries Encode/Decode and JS gets a
+  matching `VarInt` type with checked conversion to and from `number`.
 - The generated TypeScript is committed and a CI lane regenerates it and
   fails on drift, so JS contributors and npm publishing never need the
   nightly toolchain Charon pins. It lives inside js/net and `@moq/net` stays
@@ -54,8 +56,7 @@ js/net it replaces, measured with the [browser benchmarks](/quest/m1/browser-ben
 
 ## Required
 
-- [VarInt codec](/quest/m1/rs2ts/varint-codec.md) - moq-net encodes through a `VarInt` newtype and a concrete slice-based codec, not generic traits on primitives
-- [JS VarInt](/quest/m1/rs2ts/js-varint.md) - js/net has a 62-bit `VarInt` type with checked `number` conversion and no BigInt on the hot path
+- [JS VarInt](/quest/m1/rs2ts/js-varint.md) - js/net has a 64-bit `VarInt` type with checked `number` conversion and no BigInt on the hot path
 - [rs2ts](/quest/m1/rs2ts/translator.md) - a Charon-based translator emits readable TypeScript for moq-net's lite codec, committed and checked for drift in CI
 - [Sans-IO moq-net](/quest/m1/rs2ts/sans-io/README.md) - moq-net builds and runs without a runtime; async helpers sit behind an `async` feature
 - [Mock-clock tests](/quest/m1/rs2ts/mock-clock.md) - moq-net's tests run on the sans-IO clock instead of tokio, so they translate with the code

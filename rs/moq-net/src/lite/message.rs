@@ -32,9 +32,9 @@ pub trait Message: Sized + std::fmt::Debug {
 impl<T: Message> Encode<Version> for T {
 	fn encode(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		tracing::trace!(?self, "encoding");
-		let start = w.position();
+		let prefix = w.prefix_varint();
 		self.encode_msg(w, version)?;
-		w.prefix_varint(start)
+		w.fill(prefix)
 	}
 }
 

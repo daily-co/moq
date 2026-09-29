@@ -120,7 +120,7 @@ pub(super) fn skip_group_order(r: &mut Decoder<'_>, version: Version) -> Result<
 /// Write the retired `Ordered` byte as 0, keeping a deployed version's field offsets.
 pub(super) fn pad_group_order(w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 	if version.has_group_order() {
-		w.u8(0u8);
+		w.u8(0);
 	}
 	Ok(())
 }

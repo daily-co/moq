@@ -152,7 +152,7 @@ impl Message for Subscribe<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		w.string(&self.track_name)?;
@@ -164,7 +164,7 @@ impl Message for Subscribe<'_> {
 				w.bool(true); // forward
 
 				self.filter.encode(w, version)?;
-				w.u8(0u8); // no parameters
+				w.u8(0); // no parameters
 			}
 			_ => {
 				// FILL_PARAMETERS arrived in draft-20. Sending it to an older peer would be an
@@ -222,7 +222,7 @@ impl Message for SubscribeOk {
 
 		match version {
 			Version::Draft14 => {
-				w.varint(VarInt::from(0u64))?; // expires = 0
+				w.varint(VarInt::ZERO)?; // expires = 0
 				self.properties
 					.group_order
 					.unwrap_or(GroupOrder::Ascending)
@@ -231,7 +231,7 @@ impl Message for SubscribeOk {
 				if let Some(largest) = self.largest {
 					largest.encode(w, version)?;
 				}
-				w.u8(0u8); // no parameters
+				w.u8(0); // no parameters
 			}
 			_ => {
 				// GROUP_ORDER is a legal SUBSCRIBE_OK parameter only through draft-15; a later
@@ -396,7 +396,7 @@ impl Message for SubscribeUpdate {
 				w.varint(VarInt::from(self.end_group))?;
 				w.u8(self.subscriber_priority);
 				w.bool(self.forward);
-				w.u8(0u8); // no parameters
+				w.u8(0); // no parameters
 			}
 			Version::Draft15 | Version::Draft16 => {
 				self.request_id.encode(w, version)?;
@@ -417,7 +417,7 @@ impl Message for SubscribeUpdate {
 				// REQUEST_UPDATE
 				self.request_id.encode(w, version)?;
 				if matches!(version, Version::Draft17) {
-					w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+					w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 				}
 				encode_params!(w, version,
 					0x10 => self.forward,

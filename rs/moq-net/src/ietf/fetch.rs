@@ -41,7 +41,7 @@ impl Encode<Version> for FetchType<'_> {
 				start,
 				end,
 			} => {
-				w.u8(1u8);
+				w.u8(1);
 				encode_namespace(w, namespace)?;
 				w.string(track)?;
 				start.encode(w, version)?;
@@ -51,7 +51,7 @@ impl Encode<Version> for FetchType<'_> {
 				subscriber_request_id,
 				group_offset,
 			} => {
-				w.u8(2u8);
+				w.u8(2);
 				subscriber_request_id.encode(w, version)?;
 				w.varint(VarInt::from(*group_offset))?;
 			}
@@ -59,7 +59,7 @@ impl Encode<Version> for FetchType<'_> {
 				subscriber_request_id,
 				group_id,
 			} => {
-				w.u8(3u8);
+				w.u8(3);
 				subscriber_request_id.encode(w, version)?;
 				w.varint(VarInt::from(*group_id))?;
 			}
@@ -119,7 +119,7 @@ impl Message for Fetch<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 
 		match version {
@@ -127,7 +127,7 @@ impl Message for Fetch<'_> {
 				w.u8(self.subscriber_priority);
 				self.group_order.encode(w, version)?;
 				self.fetch_type.encode(w, version)?;
-				w.u8(0u8); // no parameters
+				w.u8(0); // no parameters
 			}
 			_ => {
 				self.fetch_type.encode(w, version)?;
@@ -204,7 +204,7 @@ impl Message for FetchOk {
 				self.group_order.encode(w, version)?;
 				w.bool(self.end_of_track);
 				self.end_location.encode(w, version)?;
-				w.u8(0u8); // no parameters
+				w.u8(0); // no parameters
 			}
 			_ => {
 				// GROUP_ORDER is not a legal FETCH_OK parameter in any draft after 14; the order

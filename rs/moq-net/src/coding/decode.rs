@@ -172,9 +172,10 @@ impl<'a> Decoder<'a> {
 	}
 
 	/// Read a varint.
+	#[inline]
 	pub fn varint(&mut self) -> Result<VarInt, DecodeError> {
-		let (value, len) = VarInt::decode_form(self.buf, self.form)?;
-		self.buf = &self.buf[len..];
+		let (value, rest) = VarInt::read(self.buf, self.form)?;
+		self.buf = rest;
 		Ok(value)
 	}
 

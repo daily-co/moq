@@ -874,7 +874,7 @@ where
 							.await?;
 							stream.encode(&VarInt::from(frame.payload.len())).await?;
 							if frame.payload.is_empty() && matches!(version, Version::Draft14 | Version::Draft15) {
-								stream.encode(&VarInt::from(0u64)).await?;
+								stream.encode(&VarInt::ZERO).await?;
 							}
 							if !frame.payload.is_empty() {
 								let mut payload = frame.payload;
@@ -921,7 +921,7 @@ where
 
 					stream.encode(&VarInt::from(frame.size)).await?;
 					if frame.size == 0 && matches!(version, Version::Draft14 | Version::Draft15) {
-						stream.encode(&VarInt::from(0u64)).await?;
+						stream.encode(&VarInt::ZERO).await?;
 					}
 					loop {
 						let chunk = {
@@ -981,7 +981,7 @@ where
 		if version == Version::Draft14 {
 			let properties = properties.unwrap_or_default();
 			stream.buffer(&VarInt::from(sequence))?;
-			stream.buffer(&VarInt::from(0u64))?;
+			stream.buffer(&VarInt::ZERO)?;
 			stream.buffer(&VarInt::from(object))?;
 			// Publisher priority, a raw byte.
 			stream.buffer_raw(&[0]);
@@ -1226,7 +1226,7 @@ where
 			.await?;
 			writer.encode(&VarInt::from(frame.payload.len())).await?;
 			if frame.payload.is_empty() && matches!(self.version, Version::Draft14 | Version::Draft15) {
-				writer.encode(&VarInt::from(0u64)).await?;
+				writer.encode(&VarInt::ZERO).await?;
 			}
 			if !frame.payload.is_empty() {
 				let mut payload = frame.payload;
@@ -2142,8 +2142,8 @@ impl<S: crate::transport::poll::Session> TrackServe<S> {
 			flags: ietf::GroupFlags::default(),
 		})?;
 		// Object ID delta 0, then an empty object whose status is END_OF_TRACK.
-		writer.buffer(&VarInt::from(0u64))?;
-		writer.buffer(&VarInt::from(0u64))?;
+		writer.buffer(&VarInt::ZERO)?;
+		writer.buffer(&VarInt::ZERO)?;
 		writer.encode(&VarInt::from(END_OF_TRACK)).await?;
 		// PUBLISH_DONE follows once this closes, like every other data stream.
 		writer.close().await

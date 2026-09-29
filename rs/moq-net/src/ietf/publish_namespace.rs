@@ -52,7 +52,7 @@ impl Message for PublishNamespace<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		encode_cluster_params(w, version, self.cluster.as_ref())
@@ -106,7 +106,7 @@ impl Message for PublishNamespaceUpdate {
 			Version::Draft14 | Version::Draft15 | Version::Draft16 => return Err(EncodeError::Version),
 			Version::Draft17 => {
 				self.request_id.encode(w, version)?;
-				w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+				w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 			}
 			_ => self.request_id.encode(w, version)?,
 		}

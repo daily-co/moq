@@ -71,12 +71,6 @@ impl<'a> Encoder<'a> {
 		self.form
 	}
 
-	/// Where the next byte goes: the buffer's length, including any written before this
-	/// encoder. Mark a size-prefixed body's start with it.
-	pub fn position(&self) -> usize {
-		self.buf.len()
-	}
-
 	/// Write raw bytes.
 	pub fn slice(&mut self, v: &[u8]) {
 		self.buf.extend_from_slice(v);
@@ -98,10 +92,9 @@ impl<'a> Encoder<'a> {
 	}
 
 	/// Write a varint, or fail with [`EncodeError::BoundsExceeded`] if the form cannot carry it.
+	#[inline]
 	pub fn varint(&mut self, v: VarInt) -> Result<(), EncodeError> {
-		let (buf, len) = v.encode_form(self.form)?;
-		self.buf.extend_from_slice(&buf[..len]);
-		Ok(())
+		Ok(v.write(self.form, self.buf)?)
 	}
 
 	/// Write an optional varint: `None` as 0, and `Some(n)` as `n + 1`.
@@ -125,40 +118,110 @@ impl<'a> Encoder<'a> {
 		self.bytes(v.as_bytes())
 	}
 
-	/// Prefix everything written since [`Self::position`] was `start` with its varint length.
-	pub fn prefix_varint(&mut self, start: usize) -> Result<(), EncodeError> {
-		let size = VarInt::from(self.buf.len() - start);
-		let (prefix, len) = size.encode_form(self.form)?;
-		self.buf.splice(start..start, prefix[..len].iter().copied());
-		Ok(())
+	/// Reserve a varint size prefix for the body written next; [`Self::fill`] sizes it.
+	///
+	/// One byte is reserved, which most bodies fit, so they never move.
+	pub fn prefix_varint(&mut self) -> Prefix {
+		self.buf.push(0);
+		Prefix {
+			body: self.buf.len(),
+			kind: PrefixKind::VarInt,
+		}
 	}
 
-	/// Prefix everything written since [`Self::position`] was `start` with its `u16` length.
-	pub fn prefix_u16(&mut self, start: usize) -> Result<(), EncodeError> {
-		let size = u16::try_from(self.buf.len() - start).map_err(|_| EncodeError::TooLarge)?;
-		self.buf.splice(start..start, size.to_be_bytes());
+	/// Reserve a big-endian `u16` size prefix for the body written next; [`Self::fill`] sizes it.
+	pub fn prefix_u16(&mut self) -> Prefix {
+		self.buf.extend_from_slice(&[0, 0]);
+		Prefix {
+			body: self.buf.len(),
+			kind: PrefixKind::U16,
+		}
+	}
+
+	/// Size a reserved prefix to everything written since.
+	pub fn fill(&mut self, prefix: Prefix) -> Result<(), EncodeError> {
+		let body = prefix.body;
+		let end = self.buf.len();
+
+		match prefix.kind {
+			PrefixKind::U16 => {
+				let size = u16::try_from(end - body).map_err(|_| EncodeError::TooLarge)?;
+				self.buf[body - 2..body].copy_from_slice(&size.to_be_bytes());
+			}
+			PrefixKind::VarInt => {
+				// Encode the size past the body, then move it into the reserved byte,
+				// shifting the body up when the size needs more than that one byte.
+				VarInt::from(end - body).write(self.form, self.buf)?;
+				let len = self.buf.len() - end;
+				if len == 1 {
+					self.buf[body - 1] = self.buf[end];
+					self.buf.truncate(end);
+					return Ok(());
+				}
+
+				let mut size = [0u8; 9];
+				size[..len].copy_from_slice(&self.buf[end..]);
+				self.buf.truncate(end + len - 1);
+				self.buf.copy_within(body..end, body + len - 1);
+				self.buf[body - 1..body - 1 + len].copy_from_slice(&size[..len]);
+			}
+		}
 		Ok(())
 	}
+}
+
+/// A size prefix reserved ahead of a body, sized by [`Encoder::fill`] once it is written.
+#[must_use = "an unfilled prefix leaves a zero size on the wire"]
+#[derive(Debug)]
+pub struct Prefix {
+	/// Where the body starts, just past the reserved bytes.
+	body: usize,
+	kind: PrefixKind,
+}
+
+#[derive(Debug)]
+enum PrefixKind {
+	VarInt,
+	U16,
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	/// The prefix lands before the body, sized to it, even when it takes more than a byte.
+	/// The prefix lands before the body, sized to it, even when it outgrows the one byte
+	/// reserved for it.
 	#[test]
 	fn prefix_varint_sizes_the_body() {
 		for size in [0usize, 63, 64, 20_000] {
 			let mut buf = vec![0xaa];
 			let mut w = Encoder::new(&mut buf, Form::Quic);
-			let start = w.position();
+			let prefix = w.prefix_varint();
 			w.slice(&vec![0x55; size]);
-			w.prefix_varint(start).unwrap();
+			w.fill(prefix).unwrap();
+			w.u8(0xbb);
 
 			let mut r = super::super::Decoder::new(&buf[1..], Form::Quic);
 			assert_eq!(buf[0], 0xaa);
 			assert_eq!(r.varint().unwrap().into_inner(), size as u64);
-			assert_eq!(r.rest(), vec![0x55; size]);
+			assert_eq!(r.slice(size).unwrap(), vec![0x55; size]);
+			assert_eq!(r.rest(), [0xbb]);
 		}
+	}
+
+	#[test]
+	fn prefix_u16_sizes_the_body() {
+		let mut buf = Vec::new();
+		let mut w = Encoder::new(&mut buf, Form::Quic);
+		let prefix = w.prefix_u16();
+		w.slice(&[0x55; 300]);
+		w.fill(prefix).unwrap();
+		assert_eq!(buf[..2], 300u16.to_be_bytes());
+		assert_eq!(buf.len(), 302);
+
+		let mut w = Encoder::new(&mut buf, Form::Quic);
+		let prefix = w.prefix_u16();
+		w.slice(&vec![0; 1 << 16]);
+		assert!(matches!(w.fill(prefix), Err(EncodeError::TooLarge)));
 	}
 }

@@ -910,7 +910,7 @@ mod tests {
 					// Delta-encoded: first delta=0x20 (abs=0x20), second delta=0 (abs=0x20)
 					w.varint(VarInt::from(0x20u64)).unwrap();
 					100u8.param_encode(&mut w, version).unwrap();
-					w.varint(VarInt::from(0u64)).unwrap();
+					w.varint(VarInt::ZERO).unwrap();
 					200u8.param_encode(&mut w, version).unwrap();
 				}
 			}

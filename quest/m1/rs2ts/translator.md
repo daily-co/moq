@@ -55,5 +55,5 @@ translates. Wire: none.
 
 ## Required
 
-- [VarInt codec](/quest/m1/rs2ts/varint-codec.md) - the codec shape the translator targets
+
 - [JS VarInt](/quest/m1/rs2ts/js-varint.md) - the TypeScript type `VarInt` maps to

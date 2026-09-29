@@ -243,7 +243,7 @@ impl Message for Publish<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0
+			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		w.string(&self.track_name)?;
@@ -264,7 +264,7 @@ impl Message for Publish<'_> {
 
 				w.bool(self.forward);
 				// parameters
-				w.u8(0u8);
+				w.u8(0);
 			}
 			_ => {
 				// GROUP_ORDER is a legal PUBLISH parameter only through draft-15; a later peer
@@ -404,7 +404,7 @@ impl Message for PublishOk {
 				// decode, so encoding one would truncate the message.
 				self.filter.encode(w, version)?;
 				// no parameters
-				w.u8(0u8);
+				w.u8(0);
 			}
 			// Draft-20 moved the subscription parameters out of PUBLISH_OK; they belong to
 			// PUBLISH and REQUEST_UPDATE now, so a PUBLISH_OK carries none of them.

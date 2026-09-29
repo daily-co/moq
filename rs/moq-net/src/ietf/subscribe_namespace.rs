@@ -111,7 +111,7 @@ impl Message for SubscribeNamespaceLegacy<'_> {
 		}
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
+			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0 (draft-17 only, removed in draft-18 per #1615)
 		}
 		encode_namespace(w, &self.namespace)?;
 		if matches!(version, Version::Draft16 | Version::Draft17) {
@@ -398,9 +398,7 @@ mod tests {
 		let mut buf = Vec::new();
 		encode_namespace(&mut Encoder::new(&mut buf, version.into()), &Path::new("a")).unwrap();
 		// Number of Parameters = 0.
-		Encoder::new(&mut buf, version.into())
-			.varint(VarInt::from(0u64))
-			.unwrap();
+		Encoder::new(&mut buf, version.into()).varint(VarInt::ZERO).unwrap();
 
 		let mut bytes = bytes::Bytes::from(buf);
 		assert!(matches!(

@@ -86,8 +86,8 @@ impl Filter {
 			// that spelling normalizes to this one rather than colliding with NextObject.
 			Self::Unfiltered => {}
 			Self::NextObject => {
-				w.varint(VarInt::from(0u64))?;
-				w.varint(VarInt::from(0u64))?;
+				w.varint(VarInt::ZERO)?;
+				w.varint(VarInt::ZERO)?;
 			}
 			Self::Relative(groups) => w.varint(VarInt::from(groups))?,
 			Self::Absolute {
@@ -555,7 +555,7 @@ impl Param for Fill {
 		// An omitted filter inherits the subscription's, so the scope is empty. An explicit
 		// Unfiltered still encodes, as a zero-length filter meaning the whole track.
 		match self.filter {
-			None => inner.varint(VarInt::from(0u64))?,
+			None => inner.varint(VarInt::ZERO)?,
 			Some(filter) => {
 				inner.varint(VarInt::from(1u64))?;
 				// The first type in a scope is not delta encoded, so this is the raw id.
@@ -690,7 +690,7 @@ mod fill_tests {
 		Encoder::new(&mut value, NEW.into())
 			.varint(VarInt::from(0x10u64))
 			.unwrap(); // FORWARD, not allowed in a fill
-		Encoder::new(&mut value, NEW.into()).varint(VarInt::from(0u64)).unwrap();
+		Encoder::new(&mut value, NEW.into()).varint(VarInt::ZERO).unwrap();
 
 		let mut buf = Vec::new();
 		Encoder::new(&mut buf, NEW.into()).bytes(&value).unwrap();

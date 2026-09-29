@@ -2,7 +2,7 @@
 
 ## Goal
 
-js/net has a `VarInt` type that holds the full 62-bit range, converts to and
+js/net has a `VarInt` type that holds the full 64-bit range, converts to and
 from `number` with a loud error outside the safe range, and encodes and
 decodes without BigInt on the hot path. It is the TypeScript type rs2ts maps
 Rust's `VarInt` to.
@@ -21,7 +21,8 @@ Guidance:
   and comparison and increment methods so sequence logic never converts.
 - Move js/net's varint reading and writing onto it, dropping the BigInt
   round trip for QUIC and leading-ones varints.
-- Unit-test the boundaries (2^30, 2^53, 2^62 - 1) against Rust's encoder in
-  `just test interop`.
+- Unit-test the boundaries (2^30, 2^53, 2^62 - 1, 2^62, 2^64 - 1) against
+  Rust's encoder in `just test interop`. The QUIC form refuses anything past
+  2^62 - 1, as Rust's does.
 
 Public API: additive to `@moq/net`; lands on `main`. Wire: none.

@@ -304,7 +304,7 @@ mod tests {
 			.varint(VarInt::from(0x22u64))
 			.unwrap();
 		Encoder::new(&mut buf, Version::Draft18.into())
-			.varint(VarInt::from(0u64))
+			.varint(VarInt::ZERO)
 			.unwrap();
 
 		let mut bytes = bytes::Bytes::from(buf);

@@ -31,18 +31,18 @@ impl Message for TrackStatus<'_> {
 	fn encode_msg(&self, w: &mut Encoder<'_>, version: Version) -> Result<(), EncodeError> {
 		self.request_id.encode(w, version)?;
 		if version == Version::Draft17 {
-			w.varint(VarInt::from(0u64))?; // required_request_id_delta = 0
+			w.varint(VarInt::ZERO)?; // required_request_id_delta = 0
 		}
 		encode_namespace(w, &self.track_namespace)?;
 		w.string(&self.track_name)?;
 
 		match version {
 			Version::Draft14 => {
-				w.u8(0u8); // subscriber priority
+				w.u8(0); // subscriber priority
 				GroupOrder::Descending.encode(w, version)?;
 				w.bool(false); // forward
 				Filter::NextObject.encode(w, version)?; // filter
-				w.u8(0u8); // no parameters
+				w.u8(0); // no parameters
 			}
 			_ => {
 				encode_params!(w, version,);

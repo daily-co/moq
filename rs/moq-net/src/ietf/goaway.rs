@@ -32,7 +32,7 @@ impl Message for GoAway<'_> {
 		// conformant peer must treat as a PROTOCOL_VIOLATION. Draft-19
 		// removed the field again (#1623).
 		if matches!(version, Version::Draft18) {
-			w.varint(VarInt::from(0u64))?;
+			w.varint(VarInt::ZERO)?;
 		}
 		Ok(())
 	}
