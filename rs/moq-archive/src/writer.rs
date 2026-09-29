@@ -772,11 +772,12 @@ impl<S: ObjectStore> Committer<S> {
 		}
 		let (offset, start) = checkpoint(object)?;
 		self.checkpoints.push_back((segment, start));
+		// Checkpoint starts never decrease, so a binary search finds the last one at or before
+		// `offset` without walking a long DVR window on every commit.
 		let keep = self
 			.checkpoints
-			.iter()
-			.rposition(|&(_, start)| start <= offset)
-			.unwrap_or(0);
+			.partition_point(|&(_, start)| start <= offset)
+			.saturating_sub(1);
 		let first = self.checkpoints[0].0;
 		self.checkpoints.drain(..keep);
 		Ok(first..self.checkpoints[0].0)
