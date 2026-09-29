@@ -180,7 +180,6 @@ impl Pool {
 			}
 			ms.max(1).div_ceil(TICK_MS).saturating_mul(TICK_MS)
 		});
-
 		Self {
 			inner: Arc::new(Inner {
 				used: AtomicU64::new(0),
