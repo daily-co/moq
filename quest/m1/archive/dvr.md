@@ -35,7 +35,10 @@ path through the root claim, and a live announcement shadows it. So when live
 ends, `moq-hls` resolves the same name and falls through to the recording:
 playlists keep serving for rewind and for players finishing the last
 segments. The fall-through needs the recording to publish its catalog live,
-since `moq-hls` subscribes to it rather than FETCHing it. `moq-hls` gains
+since `moq-hls` subscribes to it rather than FETCHing it. Open: [Replay
+catalog](/quest/m1/archive/replay-catalog.md) keeps that republishing in
+`moq-cli`, so decide whether the archive service behind the root claim is a
+`moq-cli` owner or the logic moves into `moq-archive`. `moq-hls` gains
 no linger (the `hls-linger` quest was dropped, because an unannounced
 broadcast can't be FETCHed and a linger would only serve the cache). Test
 the handover: a live HLS session keeps its playlist URIs and media sequence
