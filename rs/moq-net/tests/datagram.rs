@@ -21,7 +21,7 @@ const PAYLOAD: &[u8] = b"datagram payload";
 /// Build an origin producer, spawning its driver on the ambient runtime.
 fn produce_origin(hop: u64) -> moq_net::origin::Producer {
 	let (producer, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::new(Hop::new(hop).unwrap()));
-	tokio::spawn(support::harness::run(driver));
+	support::harness::spawn(driver);
 	producer
 }
 
@@ -67,9 +67,9 @@ async fn connect_datagram_track() -> Fixture {
 /// asserts what delivery actually guarantees rather than a fixed count: whatever
 /// arrives is intact and in order, and the last one written arrives, since nothing
 /// is pushed during the drain to evict it.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn datagrams_reach_the_subscriber_in_order() {
-	tokio::time::timeout(TEST_TIMEOUT, async {
+	moq_net_sim::timeout(TEST_TIMEOUT, async {
 		let mut fixture = connect_datagram_track().await;
 		const COUNT: u64 = 32;
 
@@ -111,9 +111,9 @@ async fn datagrams_reach_the_subscriber_in_order() {
 }
 
 /// MoQ Transport has no datagram mapping: groups still flow, inserted datagrams do not.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn ietf_does_not_deliver_datagrams() {
-	tokio::time::timeout(TEST_TIMEOUT, async {
+	moq_net_sim::timeout(TEST_TIMEOUT, async {
 		let publisher = produce_origin(1);
 		let consumer_origin = produce_origin(2);
 
@@ -160,9 +160,9 @@ async fn ietf_does_not_deliver_datagrams() {
 }
 
 /// Explicit insert keeps the origin sequence on the lite wire, including a gap.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn inserted_sequences_survive_the_lite_wire() {
-	tokio::time::timeout(TEST_TIMEOUT, async {
+	moq_net_sim::timeout(TEST_TIMEOUT, async {
 		let mut fixture = connect_datagram_track().await;
 
 		fixture

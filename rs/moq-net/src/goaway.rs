@@ -473,7 +473,7 @@ mod tests {
 	}
 
 	/// The consumer reports the recorded GOAWAY both synchronously and by polling.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn consumer_observes_the_recorded_goaway() {
 		let (handle, protocol) = Handle::new(true);
 		let consumer = handle.consumer();
@@ -491,7 +491,7 @@ mod tests {
 
 	/// A session that closes without a GOAWAY resolves `recv` rather than parking
 	/// forever, so a caller watching for one can stop.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn recv_resolves_when_the_session_closes() {
 		let (handle, protocol) = Handle::new(true);
 		let consumer = handle.consumer();

@@ -64,6 +64,12 @@ pub async fn run<D: Driver>(mut driver: D) -> Error {
 	.await
 }
 
+/// Run a driver to completion on the test executor, polled with its simulated time.
+#[cfg(test)]
+pub(crate) async fn run_sim<D: Driver + Unpin>(mut driver: D) -> Error {
+	moq_net_sim::drive(move |now, waiter| driver.poll(now, waiter)).await
+}
+
 /// A clock private to one driver, advanced only by the instants it is polled with.
 ///
 /// Clones share the clock. Everything the driver owns arms its [`Deadline`]s here,
@@ -74,20 +80,25 @@ pub(crate) struct Clock(Arc<Mutex<State>>);
 
 #[derive(Default)]
 struct State {
-	#[cfg(test)]
-	tokio: bool,
 	now: Option<Instant>,
 	next: u64,
 	deadlines: BTreeMap<(Instant, u64), Arc<Mutex<kio::WaiterList>>>,
 }
 
 impl Clock {
-	/// A clock that follows tokio's pausable clock, for tests that still advance
-	/// time with `tokio::time::pause`/`advance`.
+	/// A clock the test executor advances with its simulated time. Outside the
+	/// executor, a synchronous test never waits on a deadline, so nothing advances it.
 	#[cfg(test)]
-	pub(crate) fn tokio() -> Self {
-		let clock = Self::new(tokio::time::Instant::now().into_std());
-		clock.0.lock().unwrap().tokio = true;
+	pub(crate) fn sim() -> Self {
+		if !moq_net_sim::is_running() {
+			return Self::new(Instant::now());
+		}
+		let clock = Self::new(moq_net_sim::now());
+		let driven = clock.clone();
+		moq_net_sim::attach(move |now| {
+			driven.advance(now);
+			driven.timeout()
+		});
 		clock
 	}
 
@@ -128,12 +139,7 @@ impl Clock {
 
 	/// The latest instant supplied by the owning driver.
 	pub(crate) fn now(&self) -> Instant {
-		let state = self.0.lock().unwrap();
-		#[cfg(test)]
-		if state.tokio {
-			return tokio::time::Instant::now().into_std();
-		}
-		state.now.expect("driver has not been polled")
+		self.0.lock().unwrap().now.expect("driver has not been polled")
 	}
 }
 
@@ -143,8 +149,6 @@ impl Clock {
 /// moves. Re-setting the instant it already holds does nothing, so a poll loop can
 /// recompute its deadline every turn without restarting the countdown.
 pub(crate) struct Deadline {
-	#[cfg(test)]
-	tokio: Option<TokioSleep>,
 	clock: Clock,
 	id: u64,
 	at: Option<Instant>,
@@ -158,8 +162,6 @@ impl Deadline {
 		let id = state.next;
 		state.next = state.next.checked_add(1).expect("deadline identifier overflow");
 		Self {
-			#[cfg(test)]
-			tokio: state.tokio.then(TokioSleep::default),
 			clock: clock.clone(),
 			id,
 			at: None,
@@ -193,12 +195,6 @@ impl Deadline {
 		if self.at == at {
 			return;
 		}
-		#[cfg(test)]
-		if let Some(sleep) = &mut self.tokio {
-			self.at = at;
-			sleep.set(at);
-			return;
-		}
 		let mut state = self.clock.0.lock().unwrap();
 		if let Some(old) = self.at.take() {
 			state.deadlines.remove(&(old, self.id));
@@ -219,10 +215,6 @@ impl Deadline {
 	/// `Ready` once the clock reaches the armed instant, registering `waiter`
 	/// otherwise. Fused until re-armed; a disarmed deadline never fires.
 	pub(crate) fn poll(&mut self, waiter: &kio::Waiter) -> Poll<()> {
-		#[cfg(test)]
-		if let Some(sleep) = &mut self.tokio {
-			return sleep.poll(waiter);
-		}
 		let Some(at) = self.at else { return Poll::Pending };
 		// Register under the clock lock, so an `advance` past `at` either happened
 		// first (and we see it) or wakes this registration.
@@ -244,39 +236,6 @@ impl Drop for Deadline {
 impl std::fmt::Debug for Deadline {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("Deadline").field("at", &self.at).finish()
-	}
-}
-
-/// A tokio sleep behind a [`Clock::tokio`] deadline, which paused tests auto-advance.
-#[cfg(test)]
-#[derive(Default)]
-struct TokioSleep {
-	at: Option<Instant>,
-	// Allocated on the first poll after arming, then re-armed in place via
-	// `Sleep::reset`. Construction is deferred because it panics without a live
-	// tokio time driver, and only the poll is guaranteed to run inside the runtime.
-	sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
-}
-
-#[cfg(test)]
-impl TokioSleep {
-	fn set(&mut self, at: Option<Instant>) {
-		self.at = at;
-		// Reuse the allocation when there is one; `reset` also clears `is_elapsed`.
-		if let (Some(at), Some(sleep)) = (at, &mut self.sleep) {
-			sleep.as_mut().reset(tokio::time::Instant::from_std(at));
-		}
-	}
-
-	fn poll(&mut self, waiter: &kio::Waiter) -> Poll<()> {
-		let Some(at) = self.at else { return Poll::Pending };
-		let sleep = self
-			.sleep
-			.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at))));
-		if sleep.is_elapsed() {
-			return Poll::Ready(());
-		}
-		waiter.poll_future(sleep.as_mut())
 	}
 }
 

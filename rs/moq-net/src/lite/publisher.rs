@@ -1533,7 +1533,7 @@ mod test {
 	/// served group resolves the start, the cursor floor rises to it, so a lower
 	/// group arriving late (unordered delivery) is never served after the range
 	/// was declared dropped.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn start_floor_suppresses_late_lower_arrivals() {
 		use futures::FutureExt;
 
@@ -1567,7 +1567,7 @@ mod test {
 		);
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn recv_next_drains_datagram_before_finished() {
 		let mut producer = track_producer("test");
 		let mut subscriber = producer.subscribe(None);
@@ -1588,7 +1588,7 @@ mod test {
 		}
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn recv_next_reports_future_boundary_before_finished() {
 		let mut producer = track_producer("test");
 		let mut subscriber = producer.subscribe(None);
@@ -1626,7 +1626,7 @@ mod test {
 	/// A relay can ingest back-to-back groups micro-reordered (the upstream leg
 	/// sends newest-first). The older group is cached and in demand, so serving
 	/// must still deliver it; a sequence cursor would skip it permanently.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn recv_next_serves_late_arrival_after_newer_group() {
 		use futures::FutureExt;
 
@@ -1727,13 +1727,13 @@ mod announce_test {
 		/// The initial announcement; drop to retract, update to restart.
 		announcement: crate::model::AnnounceProducer,
 		wire: Wire,
-		task: tokio::task::JoinHandle<Result<(), Error>>,
+		task: moq_net_sim::JoinHandle<Result<(), Error>>,
 	}
 
 	impl Harness {
 		/// Assert the loop is quiet *and* still alive. A panicked announce task
 		/// also writes nothing, so silence alone would pass for the wrong reason
-		/// (`tokio::spawn` parks the panic in the handle until it's joined).
+		/// (`moq_net_sim::spawn` parks the panic in the handle until it's joined).
 		fn assert_idle(&self) {
 			self.wire.assert_quiet();
 			assert!(!self.task.is_finished(), "the announce loop ended unexpectedly");
@@ -1741,7 +1741,7 @@ mod announce_test {
 	}
 
 	async fn settle() {
-		tokio::time::sleep(Duration::from_millis(1)).await;
+		moq_net_sim::sleep(Duration::from_millis(1)).await;
 	}
 
 	/// Announce one route with cost 7 and run the announce loop against it.
@@ -1761,7 +1761,7 @@ mod announce_test {
 			writer: Writer::new(SinkSend::new(log), VERSION),
 			reader: Reader::new(PendingRecv, VERSION),
 		};
-		let task = tokio::spawn(async move {
+		let task = moq_net_sim::spawn(async move {
 			let mut announced = consumer.announced();
 			let self_origin = consumer.hop();
 			TestPublisher::run_announce(&mut stream, &consumer, &mut announced, self_origin, VERSION).await
@@ -1789,7 +1789,7 @@ mod announce_test {
 
 	/// A live announce goes out as an Active with a fresh id; its retraction
 	/// references the id.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn announce_and_retract() {
 		let mut h = harness().await;
 
@@ -1814,7 +1814,7 @@ mod announce_test {
 	}
 
 	/// A metadata update restarts the advertisement in place, keeping its id.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn update_restarts_in_place() {
 		let mut h = harness().await;
 
@@ -1833,7 +1833,7 @@ mod announce_test {
 	}
 
 	/// An identical update never reaches the wire: the origin coalesces it away.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn identical_update_is_quiet() {
 		let h = harness().await;
 		h.announcement
@@ -1845,7 +1845,7 @@ mod announce_test {
 
 	/// A route whose chain contains the excluded peer is invisible to that peer's
 	/// announce stream (control-plane split horizon via the cursor).
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn excluded_routes_are_filtered() {
 		let peer = Hop::new(42).unwrap();
 		let origin = Hop::new(1).unwrap().produce();
@@ -1865,7 +1865,7 @@ mod announce_test {
 			writer: Writer::new(SinkSend::new(log), VERSION),
 			reader: Reader::new(PendingRecv, VERSION),
 		};
-		let task = tokio::spawn(async move {
+		let task = moq_net_sim::spawn(async move {
 			let mut announced = consumer.announced();
 			let self_origin = consumer.hop();
 			TestPublisher::run_announce(&mut stream, &consumer, &mut announced, self_origin, VERSION).await
@@ -1882,7 +1882,7 @@ mod announce_test {
 	}
 
 	/// A route announced after the initial burst goes out as ANNOUNCE_START.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn late_route_emits_announce_start() {
 		let mut h = harness().await;
 		let _late = h
@@ -1898,7 +1898,7 @@ mod announce_test {
 	}
 
 	/// A cost past the wire ceiling is clamped rather than rejected.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn cost_clamps_to_the_wire_ceiling() {
 		let mut h = harness().await;
 		h.announcement
@@ -2865,7 +2865,7 @@ mod serve_group_test {
 		}
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn resets_with_the_abort_code() {
 		let log = Log::default();
 		let session = SinkSession::new(log.clone());
@@ -2904,10 +2904,8 @@ mod serve_group_test {
 
 	/// A subscription group keeps checking the max age while a transport write is
 	/// flow-control blocked, so a stalled send cannot pin the stream indefinitely.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn blocked_transport_write_expires_with_the_group() {
-		tokio::time::pause();
-
 		let gate = kio::Producer::new(false);
 		let session = SinkSession::gated_uni(gate.consume());
 		let log = session.log.clone();
@@ -2938,7 +2936,7 @@ mod serve_group_test {
 			"transport write is blocked"
 		);
 
-		tokio::time::advance(Duration::from_secs(1)).await;
+		moq_net_sim::advance(Duration::from_secs(1)).await;
 		let mut edge = track.append_group().unwrap();
 		edge.write_frame(Timestamp::from_millis(1000).unwrap(), b"edge".as_slice())
 			.unwrap();
@@ -2949,10 +2947,8 @@ mod serve_group_test {
 	}
 
 	/// The final payload remains guarded after its frame has advanced the group cursor.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn blocked_final_transport_chunk_expires_with_the_group() {
-		tokio::time::pause();
-
 		let gate = kio::Producer::new(true);
 		let session = SinkSession::gated_uni(gate.consume());
 		let log = session.log.clone();
@@ -3001,7 +2997,7 @@ mod serve_group_test {
 			"the final byte is transport-blocked"
 		);
 
-		tokio::time::advance(Duration::from_secs(1)).await;
+		moq_net_sim::advance(Duration::from_secs(1)).await;
 		let mut edge = track.append_group().unwrap();
 		edge.write_frame(Timestamp::from_millis(1000).unwrap(), b"edge".as_slice())
 			.unwrap();
@@ -3013,10 +3009,8 @@ mod serve_group_test {
 
 	/// A subscription group keeps checking the max age while transport stream credit is
 	/// exhausted, so returning credit is reserved for content that is still live.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn blocked_transport_open_expires_with_the_group() {
-		tokio::time::pause();
-
 		let gate = kio::Producer::new(false);
 		let session = SinkSession::gated_open_uni(gate.consume());
 		let track_priority = kio::Producer::new(0u8);
@@ -3046,7 +3040,7 @@ mod serve_group_test {
 			"stream credit is exhausted"
 		);
 
-		tokio::time::advance(Duration::from_secs(1)).await;
+		moq_net_sim::advance(Duration::from_secs(1)).await;
 		let mut edge = track.append_group().unwrap();
 		edge.write_frame(Timestamp::from_millis(1000).unwrap(), b"edge".as_slice())
 			.unwrap();
@@ -3084,7 +3078,7 @@ mod serve_group_test {
 	/// releases the stream via `poll_close`; leaving the writer to drop after
 	/// `finish()` would fire the Drop fallback and tack a spurious Cancel reset
 	/// onto a stream the peer already acknowledged.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn completed_group_does_not_reset() {
 		let log = Log::default();
 		let session = SinkSession::new(log.clone());
@@ -3166,7 +3160,7 @@ mod serve_group_test {
 
 	/// SUBSCRIBE_END counts the group streams opened, not the groups below the end: a
 	/// group the track never produced has no stream and is not counted.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn lite07_end_counts_the_streams_opened() {
 		let mut track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
 		let subscriber = track.subscribe(None);
@@ -3260,7 +3254,7 @@ mod serve_group_test {
 
 	/// A SUBSCRIBE_UPDATE landing while the first group waits on the source's start keeps
 	/// the floor it raised: resolving the start from the held group must not lower it.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn held_first_group_keeps_an_updated_floor() {
 		let mut track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
 		let mut relay = RelayRun::new(&mut track, 0).await;
@@ -3292,7 +3286,7 @@ mod serve_group_test {
 
 	/// A source whose feed starts below the subscriber's floor serves the floor's group, so
 	/// a newer group arriving first must not resolve the start past it.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn held_first_group_resolves_to_the_floor_under_the_source() {
 		let mut track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
 		let mut relay = RelayRun::new(&mut track, 5).await;
@@ -3311,7 +3305,7 @@ mod serve_group_test {
 
 	/// A group skipped for a missing head before the start resolves is never served, so
 	/// SUBSCRIBE_START must not name it, even where the source's feed starts.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn held_first_group_starts_past_a_skipped_head() {
 		let mut track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
 		let mut relay = RelayRun::new(&mut track, 5).await;
@@ -3333,7 +3327,7 @@ mod serve_group_test {
 	}
 
 	/// A track that ends without a group still ends the subscription, with no stream owed.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn lite07_end_counts_zero_streams() {
 		let track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
 		let subscriber = track.subscribe(None);
@@ -3347,10 +3341,8 @@ mod serve_group_test {
 	/// The count is sent once every served group has opened its stream or given up, so a
 	/// group still waiting for stream credit holds SUBSCRIBE_END back, and one that expires
 	/// first is never counted.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn lite07_end_waits_for_every_stream_to_open() {
-		tokio::time::pause();
-
 		let gate = kio::Producer::new(false);
 		let mut track = track::Producer::new(Arc::new(broadcast::Info::default()), "test", None);
 		let subscriber = track.subscribe(None);
@@ -3361,7 +3353,7 @@ mod serve_group_test {
 		assert!(futures::poll!(run.as_mut()).is_pending());
 
 		// Group 1 lands a second later, expiring group 0 before it ever opened.
-		tokio::time::advance(Duration::from_secs(1)).await;
+		moq_net_sim::advance(Duration::from_secs(1)).await;
 		write_group(&mut track, 1, 1000);
 		track.finish().unwrap();
 		assert!(futures::poll!(run.as_mut()).is_pending(), "group 1 is still opening");
@@ -3387,7 +3379,7 @@ mod tests {
 	/// the caller assigned it, on the data plane and not just the announce filter.
 	/// Otherwise it can subscribe its way back to content that already flowed through
 	/// it, which is the loop the announce filter exists to prevent.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn serving_origin_falls_back_to_the_assigned_identity() {
 		let assigned = crate::Hop::new(777).unwrap();
 		let upstream = crate::Hop::new(778).unwrap();
@@ -3416,7 +3408,7 @@ mod tests {
 		let (_, goaway) = crate::goaway::Handle::new(true);
 
 		let publisher = Publisher::new(PublisherConfig {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session: SinkSession::new(Default::default()),
 			origin: origin.consume(),
 			version: Version::Lite06,
@@ -3441,7 +3433,7 @@ mod tests {
 	/// same per-peer route selection as the live loop: a broadcast whose only
 	/// route flows through the excluded hop (here the peer's assigned identity,
 	/// `Client::with_peer_hop`) is filtered from the initial set too.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn announce_init_applies_route_selection() {
 		let assigned = crate::Hop::new(777).unwrap();
 		let clean_publisher = crate::Hop::new(778).unwrap();
@@ -3517,7 +3509,7 @@ mod tests {
 		let origin = Hop::random().produce();
 		let (_, goaway) = crate::goaway::Handle::new(true);
 		let publisher = Publisher::new(PublisherConfig {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session,
 			origin: origin.consume(),
 			version,
@@ -3546,7 +3538,7 @@ mod tests {
 		// The loop reports on a 100ms cadence, so let the first tick land before
 		// reading what it wrote. It parks on the next tick either way.
 		assert!(futures::poll!(run.as_mut()).is_pending());
-		tokio::time::sleep(Duration::from_millis(150)).await;
+		moq_net_sim::sleep(Duration::from_millis(150)).await;
 		assert!(futures::poll!(run.as_mut()).is_pending());
 
 		let writes = log.writes.lock().unwrap().clone();
@@ -3558,7 +3550,7 @@ mod tests {
 	/// The two PROBE fields are independent, each using 0 for unknown, so discarding
 	/// the whole message for want of a bitrate leaves a subscriber with no RTT at
 	/// all. That is what pins a qmux viewer to its fallback jitter buffer.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn reports_rtt_without_a_bitrate() {
 		let stats = crate::lite::test_transport::SinkStats::default().with_rtt(std::time::Duration::from_millis(40));
 		let probes = probe_writes(stats).await;
@@ -3569,7 +3561,7 @@ mod tests {
 	}
 
 	/// The mirror case: a send rate with no RTT still reports.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn reports_bitrate_without_an_rtt() {
 		let stats = crate::lite::test_transport::SinkStats::default().with_send_rate(1_000_000);
 		let probes = probe_writes(stats).await;
@@ -3581,7 +3573,7 @@ mod tests {
 
 	/// A transport measuring neither has nothing to say, and must not emit a report
 	/// claiming two zeroes.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn reports_nothing_when_nothing_is_measurable() {
 		let probes = probe_writes(crate::lite::test_transport::SinkStats::default()).await;
 		assert!(probes.is_empty(), "expected no report, got {probes:?}");
@@ -3590,7 +3582,7 @@ mod tests {
 	/// Lite03's PROBE carries no RTT field, so an RTT-only report has nothing to
 	/// say there. Sending one anyway would serialize as a bare "bitrate unknown"
 	/// and, worse, fire again on every RTT movement.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn lite03_sends_nothing_for_an_rtt_only_report() {
 		let stats = crate::lite::test_transport::SinkStats::default().with_rtt(std::time::Duration::from_millis(40));
 		let probes = probe_writes_version(stats, Version::Lite03).await;
@@ -3598,7 +3590,7 @@ mod tests {
 	}
 
 	/// Lite03 still reports the half it can carry.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn lite03_reports_the_bitrate() {
 		let stats = crate::lite::test_transport::SinkStats::default()
 			.with_send_rate(1_000_000)
@@ -3612,7 +3604,7 @@ mod tests {
 
 	/// A bitrate that becomes unknown is worth one report: the peer is still
 	/// holding the last value we sent. But only one, however long the stream runs.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_bitrate_going_unknown_is_retracted_once() {
 		let gate = kio::Producer::new(true);
 		let stats = crate::lite::test_transport::SinkStats::default().with_send_rate(1_000_000);
@@ -3623,7 +3615,7 @@ mod tests {
 		let mut server = probe_server(session.clone(), stream, Version::Lite05);
 		let mut run = std::pin::pin!(kio::wait(|waiter| server.poll_probe(waiter)));
 		assert!(futures::poll!(run.as_mut()).is_pending());
-		tokio::time::sleep(Duration::from_millis(150)).await;
+		moq_net_sim::sleep(Duration::from_millis(150)).await;
 		assert!(futures::poll!(run.as_mut()).is_pending());
 
 		// The transport stops measuring. Everything after this is unknown.
@@ -3631,7 +3623,7 @@ mod tests {
 
 		// Well past PROBE_MAX_AGE, so a stale-report timer would have fired repeatedly.
 		for _ in 0..3 {
-			tokio::time::sleep(Duration::from_secs(11)).await;
+			moq_net_sim::sleep(Duration::from_secs(11)).await;
 			assert!(futures::poll!(run.as_mut()).is_pending());
 		}
 

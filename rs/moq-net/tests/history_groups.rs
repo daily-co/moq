@@ -30,7 +30,7 @@ const VERSIONS: &[&str] = &[
 
 fn produce_origin(hop: u64) -> moq_net::origin::Producer {
 	let (producer, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::new(Hop::new(hop).unwrap()));
-	tokio::spawn(support::harness::run(driver));
+	support::harness::spawn(driver);
 	producer
 }
 
@@ -67,16 +67,16 @@ async fn round(version: &str, relay: bool, newest_first: bool) -> Vec<(u64, usiz
 	let pair = connect_mock(options).await;
 
 	let consumer = subscriber.consume();
-	tokio::time::timeout(TIMEOUT, consumer.routed("bcast"))
+	moq_net_sim::timeout(TIMEOUT, consumer.routed("bcast"))
 		.await
 		.expect("announce timeout")
 		.expect("routed");
-	let remote = tokio::time::timeout(TIMEOUT, consumer.request_broadcast("bcast"))
+	let remote = moq_net_sim::timeout(TIMEOUT, consumer.request_broadcast("bcast"))
 		.await
 		.expect("resolve timeout")
 		.expect("broadcast resolves");
 
-	let reader = tokio::spawn(async move {
+	let reader = moq_net_sim::spawn(async move {
 		let subscription = Subscription::default()
 			.with_max_age(FOREVER)
 			.with_start(Position::group(0));
@@ -90,14 +90,14 @@ async fn round(version: &str, relay: bool, newest_first: bool) -> Vec<(u64, usiz
 		// Group 6 never ends, so read until every frame arrived or nothing more does.
 		let mut got = Vec::new();
 		while got.iter().map(|(_, frames)| frames).sum::<usize>() < 5 {
-			let Ok(next) = tokio::time::timeout(TIMEOUT, sub.recv_group()).await else {
+			let Ok(next) = moq_net_sim::timeout(TIMEOUT, sub.recv_group()).await else {
 				break;
 			};
 			let Some(mut group) = next.expect("recv_group") else {
 				break;
 			};
 			let mut frames = 0;
-			while let Ok(frame) = tokio::time::timeout(TIMEOUT, group.read_frame()).await {
+			while let Ok(frame) = moq_net_sim::timeout(TIMEOUT, group.read_frame()).await {
 				match frame.expect("read_frame") {
 					Some(_) => frames += 1,
 					None => break,
@@ -109,7 +109,7 @@ async fn round(version: &str, relay: bool, newest_first: bool) -> Vec<(u64, usiz
 		got
 	});
 
-	tokio::time::timeout(TIMEOUT, track.used())
+	moq_net_sim::timeout(TIMEOUT, track.used())
 		.await
 		.expect("no subscriber appeared")
 		.unwrap();
@@ -134,11 +134,11 @@ async fn round(version: &str, relay: bool, newest_first: bool) -> Vec<(u64, usiz
 
 	if newest_first {
 		// Paused time advances only once every task is idle: both streams are open.
-		tokio::time::sleep(Duration::from_millis(10)).await;
+		moq_net_sim::sleep(Duration::from_millis(10)).await;
 		first_hop.release_unis_reversed();
 	}
 
-	let got = tokio::time::timeout(TIMEOUT * 3, reader)
+	let got = moq_net_sim::timeout(TIMEOUT * 3, reader)
 		.await
 		.expect("reader hung")
 		.expect("reader panicked");
@@ -155,9 +155,8 @@ async fn round(version: &str, relay: bool, newest_first: bool) -> Vec<(u64, usiz
 	got
 }
 
-#[tokio::test]
+#[moq_net_sim::test]
 async fn a_fresh_subscriber_receives_the_finished_older_group() {
-	tokio::time::pause();
 	let mut failures = Vec::new();
 	for version in VERSIONS {
 		for relay in [false, true] {

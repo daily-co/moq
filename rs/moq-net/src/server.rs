@@ -1037,7 +1037,7 @@ mod tests {
 		params
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_exposes_the_setup_token() {
 		let modern = FakeSession::new(
 			ALPN_19,
@@ -1051,30 +1051,24 @@ mod tests {
 			token_params(ietf::Version::Draft16),
 		));
 		for (name, session) in [("draft-19", modern), ("draft-16", legacy)] {
-			let request = Server::new()
-				.accept_request(tokio::time::Instant::now().into_std(), session)
-				.await
-				.unwrap();
+			let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 			assert_eq!(request.token(), Some(&setup_token()), "{name}");
 		}
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_without_a_token_reports_none() {
 		let ietf = FakeSession::new(ALPN_19, [ietf_setup(ietf::Version::Draft19, None)]);
 		let lite = FakeSession::new(ALPN_LITE_05, [lite05_setup(None, None, None)]);
 		for (name, session) in [("draft-19", ietf), ("lite-05", lite)] {
-			let request = Server::new()
-				.accept_request(tokio::time::Instant::now().into_std(), session)
-				.await
-				.unwrap();
+			let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 			assert_eq!(request.token(), None, "{name}");
 		}
 	}
 
 	/// A SETUP the server refuses closes the session with the code naming why, on both
 	/// the draft-17+ uni stream and the draft 14-16 bidi stream.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_refused_setup_token_closes_with_its_code() {
 		let delete = [0x0, 0x7]; // DELETE alias 7
 		let truncated = [0x3]; // USE_VALUE with no Token Type
@@ -1088,16 +1082,14 @@ mod tests {
 			let modern = FakeSession::new(ALPN_19, [ietf_setup_with(ietf::Version::Draft19, params.clone())]);
 			let legacy = FakeSession::new(ALPN_16, []).with_bi(legacy_setup(ietf::Version::Draft16, params));
 			for (name, session) in [("draft-19", modern), ("draft-16", legacy)] {
-				let result = Server::new()
-					.accept_request(tokio::time::Instant::now().into_std(), session.clone())
-					.await;
+				let result = Server::new().accept_request(moq_net_sim::now(), session.clone()).await;
 				assert!(result.is_err(), "{name}");
 				assert_eq!(session.closed(), Some(code.to_code()), "{name} {code}");
 			}
 		}
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_reads_ietf_path() {
 		// Every draft-17+ version gates on the SETUP stream before starting, so the
 		// path is known at authorization time just like lite-05.
@@ -1107,31 +1099,22 @@ mod tests {
 			(ALPN_19, ietf::Version::Draft19),
 		] {
 			let session = FakeSession::new(alpn, [ietf_setup(version, Some("/team/room"))]);
-			let request = Server::new()
-				.accept_request(tokio::time::Instant::now().into_std(), session)
-				.await
-				.unwrap();
+			let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 			assert_eq!(request.path(), "/team/room", "{alpn}");
 		}
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_ietf_without_path_is_empty() {
 		let session = FakeSession::new(ALPN_19, [ietf_setup(ietf::Version::Draft19, None)]);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.path(), "");
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_ietf_empty_path_is_accepted() {
 		let session = FakeSession::new(ALPN_19, [ietf_setup(ietf::Version::Draft19, Some(""))]);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.path(), "");
 	}
 
@@ -1142,53 +1125,41 @@ mod tests {
 		buf
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_reads_lite05_path() {
 		let session = FakeSession::new(ALPN_LITE_05, [lite05_setup(Some("/team/room"), None, None)]);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.path(), "/team/room");
 		assert_eq!(request.role(), None, "a client that omits the role is bidirectional");
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_lite05_without_path_is_empty() {
 		let session = FakeSession::new(ALPN_LITE_05, [lite05_setup(None, None, None)]);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.path(), "");
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_lite05_empty_path_is_accepted() {
 		// An empty path is valid on the wire and means the same as omitting it, so a
 		// client that wants the root doesn't have to special-case the parameter.
 		let session = FakeSession::new(ALPN_LITE_05, [lite05_setup(Some(""), None, None)]);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.path(), "");
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_reads_lite05_role() {
 		let session = FakeSession::new(
 			ALPN_LITE_05,
 			[lite05_setup(Some("/team/room"), Some(Role::Publisher), None)],
 		);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.role(), Some(Role::Publisher));
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_skips_uni_stream_before_setup() {
 		// A GROUP racing ahead of the SETUP is STOP_SENDING-ed and skipped; the gate
 		// keeps reading until it finds the SETUP.
@@ -1196,25 +1167,19 @@ mod tests {
 			ALPN_LITE_05,
 			[lite05_group(), lite05_setup(Some("/team/room"), None, None)],
 		);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.path(), "/team/room");
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn accept_request_reads_lite05_peer_hop() {
 		let hop = Hop::new(42).unwrap();
 		let session = FakeSession::new(ALPN_LITE_05, [lite05_setup(None, None, Some(hop))]);
-		let request = Server::new()
-			.accept_request(tokio::time::Instant::now().into_std(), session)
-			.await
-			.unwrap();
+		let request = Server::new().accept_request(moq_net_sim::now(), session).await.unwrap();
 		assert_eq!(request.peer_hop(), Some(hop));
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn anonymous_peer_hop_filters_routes_from_server_session() {
 		let other = Hop::new(778).unwrap();
 		let origin = crate::origin::Config::new(Hop::new(1).unwrap()).produce();
@@ -1231,7 +1196,7 @@ mod tests {
 			assigned_hop: Hop::random(),
 			inner: Some(RequestInner {
 				server: Server::new().with_publisher(&origin),
-				runtime: Clock::new(tokio::time::Instant::now().into_std()),
+				runtime: Clock::new(moq_net_sim::now()),
 				handshake: PausedHandshake::Boxed(Box::new(PausedIetfModern {
 					session: transport,
 					version,
@@ -1267,13 +1232,13 @@ mod tests {
 			.unwrap();
 
 		let (session, driver) = request.ok().await.unwrap();
-		tokio::spawn(crate::time::run(driver));
+		moq_net_sim::spawn(crate::time::run_sim(driver));
 
 		for _ in 0..100 {
 			if occurrences(&log, b"local-route") > 0 {
 				break;
 			}
-			tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+			moq_net_sim::sleep(std::time::Duration::from_millis(1)).await;
 		}
 
 		assert_eq!(occurrences(&log, b"echoed-route"), 0);

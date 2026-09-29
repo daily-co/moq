@@ -45,7 +45,7 @@ enum Late {
 
 fn produce_origin(hop: u64) -> moq_net::origin::Producer {
 	let (producer, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::new(Hop::new(hop).unwrap()));
-	tokio::spawn(support::harness::run(driver));
+	support::harness::spawn(driver);
 	producer
 }
 
@@ -71,16 +71,16 @@ async fn round(version: &str, late: Late, final_sequence: u64) -> Outcome {
 	let pair = connect_mock(options).await;
 
 	let consumer = subscriber.consume();
-	tokio::time::timeout(TIMEOUT, consumer.routed("bcast"))
+	moq_net_sim::timeout(TIMEOUT, consumer.routed("bcast"))
 		.await
 		.expect("announce timeout")
 		.expect("routed");
-	let remote = tokio::time::timeout(TIMEOUT, consumer.request_broadcast("bcast"))
+	let remote = moq_net_sim::timeout(TIMEOUT, consumer.request_broadcast("bcast"))
 		.await
 		.expect("resolve timeout")
 		.expect("broadcast resolves");
 
-	let reader = tokio::spawn(async move {
+	let reader = moq_net_sim::spawn(async move {
 		let subscription = moq_net::track::Subscription::default().with_start(moq_net::track::Position::group(0));
 		let mut sub = remote
 			.track("video")
@@ -103,10 +103,10 @@ async fn round(version: &str, late: Late, final_sequence: u64) -> Outcome {
 				}
 			}
 		};
-		(frames, err, tokio::time::Instant::now())
+		(frames, err, moq_net_sim::now())
 	});
 
-	tokio::time::timeout(TIMEOUT, track.used())
+	moq_net_sim::timeout(TIMEOUT, track.used())
 		.await
 		.expect("no subscriber appeared")
 		.unwrap();
@@ -123,20 +123,20 @@ async fn round(version: &str, late: Late, final_sequence: u64) -> Outcome {
 	if final_sequence > 0 {
 		// Paused time advances only when every task is idle, after the publisher and
 		// subscriber have processed the subscription's end.
-		tokio::time::sleep(GRACE / 10).await;
+		moq_net_sim::sleep(GRACE / 10).await;
 		assert!(
 			!reader.is_finished(),
 			"{version}: the track ended before its group arrived"
 		);
 	}
 
-	let released = tokio::time::Instant::now();
+	let released = moq_net_sim::now();
 	match late {
 		Late::Delivered => pair.server_transport.release_unis(),
 		Late::Lost => pair.server_transport.drop_unis(),
 	}
 
-	let (frames, err, ended) = tokio::time::timeout(TIMEOUT, reader)
+	let (frames, err, ended) = moq_net_sim::timeout(TIMEOUT, reader)
 		.await
 		.expect("the subscription never ended")
 		.expect("reader panicked");
@@ -150,9 +150,8 @@ async fn round(version: &str, late: Late, final_sequence: u64) -> Outcome {
 
 /// A group whose header arrives after the subscription's end is delivered, then the track
 /// ends cleanly.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn a_group_after_the_end_is_delivered() {
-	tokio::time::pause();
 	for version in VERSIONS {
 		let outcome = round(version, Late::Delivered, 1).await;
 		assert!(
@@ -176,9 +175,8 @@ async fn a_group_after_the_end_is_delivered() {
 
 /// A group that never arrives is given up on after the grace, and the track still ends
 /// cleanly without it.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn a_lost_group_ends_the_track_after_the_grace() {
-	tokio::time::pause();
 	for version in VERSIONS {
 		let outcome = round(version, Late::Lost, 1).await;
 		assert!(
@@ -196,9 +194,8 @@ async fn a_lost_group_ends_the_track_after_the_grace() {
 }
 
 /// Skipped sequences have no stream and must not hold lite-07's counted tail open.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn lite07_skipped_groups_end_without_the_grace() {
-	tokio::time::pause();
 	let outcome = round("moq-lite-07-wip", Late::Delivered, 3).await;
 	assert!(outcome.err.is_none());
 	assert_eq!(outcome.frames, [PAYLOAD]);
@@ -206,9 +203,8 @@ async fn lite07_skipped_groups_end_without_the_grace() {
 }
 
 /// A zero stream count leaves no tail to wait for.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn lite07_zero_streams_end_without_the_grace() {
-	tokio::time::pause();
 	let outcome = round("moq-lite-07-wip", Late::Delivered, 0).await;
 	assert!(outcome.err.is_none());
 	assert!(outcome.frames.is_empty());
