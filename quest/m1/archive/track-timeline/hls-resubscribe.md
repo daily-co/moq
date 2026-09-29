@@ -42,7 +42,10 @@ ends. It follows the same rules below.
 
 Add regression tests where a non-reference rendition's timeline errors and
 comes back, and its later segments resolve to media, not gaps; and where the
-reference timeline does the same, and every playlist keeps advancing.
+reference timeline does the same, and every playlist keeps advancing. One
+reconnects past `timeline::CHECKPOINT_RECORDS` on a durable timeline: the
+fresh decoder's leading `Skip` for the omitted prefix must not clear the
+rows and spans already held, so older retained segments stay listed.
 
 ## Related
 

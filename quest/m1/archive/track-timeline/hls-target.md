@@ -31,7 +31,10 @@ has reversed that decision in the 09-28 merged-PR audit:
 
 Replace `target_duration_follows_the_observed_segments` with tests that pin a
 constant target across a window whose segment durations vary, and that cover
-the over-long segment path at the rounding boundary.
+the over-long segment path at the rounding boundary. Hold the target per
+playlist URI, not per `Rendition`: `renditions::Producer::sync` replaces the
+`Rendition` on a catalog reconfigure, so test that a reconfigure mid-run
+keeps the original target.
 
 ## Related
 
