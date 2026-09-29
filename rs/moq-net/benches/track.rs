@@ -275,5 +275,11 @@ fn bench_aborted_scan(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(benches, bench_fanout, bench_parallel_write, bench_aborted_scan, bench_gc);
+criterion_group!(
+	benches,
+	bench_fanout,
+	bench_parallel_write,
+	bench_aborted_scan,
+	bench_gc
+);
 criterion_main!(benches);
