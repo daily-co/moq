@@ -148,7 +148,6 @@ owned by that prerequisite, not duplicated in archive storage.
 - [Browser archive](/quest/m1/archive/browser.md) - the same contract for browser-published broadcasts
 - [DVR rewind](/quest/m1/archive/dvr.md) - seek through a bounded archive and return to live playback
 - [DVR timeline pruning](/quest/m1/archive/pruning.md) - a DVR deletes timeline objects no retained checkpoint needs
-- [Enrollment flake](/quest/m1/archive/enrollment-flake.md) - the opening-snapshot test waits for real enrollment, not the `.info` file
 
 ## Related
 
