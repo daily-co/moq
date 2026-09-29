@@ -38,6 +38,13 @@ Mapping decided in planning:
 
 Guidance:
 
+- Keep rs2ts a generic translator for a Rust subset, not a moq-net tool. It
+  maps by Rust type and construct (e.g. `u64` to one 64-bit TypeScript type),
+  never by moq-net names; anything project-specific lives in moq-net's source
+  or a small config, so another crate could use rs2ts unchanged.
+- `VarInt::from_zigzag` and `to_zigzag` (lite per-frame timestamps) still use
+  64-bit bit math, which the subset forbids. Rewrite them on two `u32` halves,
+  or give the 64-bit TypeScript type the operations they need.
 - Pin Charon and its nightly in the nix shell for the regeneration lane only.
 - Borrow rust-js's MIT oxc printer for formatting and source maps.
 - Readability pass: inline single-use temporaries and keep source branch
