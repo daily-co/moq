@@ -203,8 +203,7 @@ fn validate(groups: &[Group]) -> Result<()> {
 }
 
 fn write_varint(buf: &mut impl BufMut, value: u64) -> Result<()> {
-	let value = VarInt::try_from(value).map_err(|_| Error::Overflow)?;
-	value.encode_quic(buf).map_err(|_| Error::Overflow)
+	VarInt::from(value).encode_quic(buf).map_err(|_| Error::Overflow)
 }
 
 fn read_varint(buf: &mut impl Buf) -> Result<u64> {

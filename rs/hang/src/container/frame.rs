@@ -120,8 +120,9 @@ impl Frame {
 	/// Write the VarInt timestamp prefix, normalized to [`TIMESCALE`].
 	fn encode_header(&self, buf: &mut impl BufMut) -> Result<(), Error> {
 		let timestamp = self.timestamp.convert(TIMESCALE)?;
-		let value = VarInt::try_from(timestamp.value()).map_err(moq_net::Error::from)?;
-		value.encode_quic(buf).map_err(moq_net::Error::from)?;
+		VarInt::from(timestamp.value())
+			.encode_quic(buf)
+			.map_err(moq_net::Error::from)?;
 
 		Ok(())
 	}

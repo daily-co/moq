@@ -2,6 +2,16 @@ use std::num::NonZero;
 
 use crate::coding::VarInt;
 
+/// `value` as a [`VarInt`] the QUIC form can carry, or `None` past `2^62 - 1`, so every
+/// timestamp stays encodable on moq-lite.
+const fn quic(value: u128) -> Option<VarInt> {
+	if value <= VarInt::MAX_QUIC.into_inner() as u128 {
+		Some(VarInt::from_u64(value as u64))
+	} else {
+		None
+	}
+}
+
 /// Returned when a [`Timestamp`] operation would exceed the QUIC VarInt range
 /// (`2^62 - 1`), overflow during scale conversion or arithmetic, or attempt
 /// arithmetic between timestamps with mismatched scales.
@@ -51,7 +61,7 @@ impl Timescale {
 	pub const fn new(units_per_second: u64) -> Result<Self, TimeOverflow> {
 		// Reject values that wouldn't fit in a QUIC varint, keeping the constraint
 		// symmetric with Timestamp's raw value.
-		if VarInt::from_u64(units_per_second).is_none() {
+		if quic(units_per_second as u128).is_none() {
 			return Err(TimeOverflow);
 		}
 		match NonZero::new(units_per_second) {
@@ -174,7 +184,7 @@ impl Timestamp {
 	/// Construct a timestamp directly from a raw value at the given scale.
 	/// Returns [`TimeOverflow`] if `value` exceeds `2^62 - 1`.
 	pub const fn new(value: u64, scale: Timescale) -> Result<Self, TimeOverflow> {
-		match VarInt::from_u64(value) {
+		match quic(value as u128) {
 			Some(value) => Ok(Self { value, scale }),
 			None => Err(TimeOverflow),
 		}
@@ -236,7 +246,7 @@ impl Timestamp {
 			return Ok(self);
 		}
 		match (self.value.into_inner() as u128).checked_mul(new_scale.0.get() as u128) {
-			Some(scaled) => match VarInt::from_u128(scaled / self.scale.0.get() as u128) {
+			Some(scaled) => match quic(scaled / self.scale.0.get() as u128) {
 				Some(value) => Ok(Self {
 					value,
 					scale: new_scale,
@@ -314,7 +324,7 @@ impl TryFrom<std::time::Duration> for Timestamp {
 
 	/// Convert a [`std::time::Duration`] into a nanosecond-scale timestamp.
 	fn try_from(duration: std::time::Duration) -> Result<Self, Self::Error> {
-		match VarInt::from_u128(duration.as_nanos()) {
+		match quic(duration.as_nanos()) {
 			Some(value) => Ok(Self {
 				value,
 				scale: Timescale::NANO,

@@ -1,7 +1,6 @@
 use std::{
 	cmp,
 	fmt::Debug,
-	io,
 	task::{Context, Poll, ready},
 };
 
@@ -44,13 +43,14 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Poll for the next message on the stream.
 	pub fn poll_decode<T: Decode<V> + Debug>(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, Error>>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		loop {
-			let mut cursor = io::Cursor::new(&self.buffer);
-			match T::decode(&mut cursor, self.version.clone()) {
+			let mut r = Decoder::new(&self.buffer, self.version.into());
+			match T::decode(&mut r, self.version) {
 				Ok(msg) => {
-					self.buffer.advance(cursor.position() as usize);
+					let used = self.buffer.len() - r.remaining();
+					self.buffer.advance(used);
 					return Poll::Ready(Ok(msg));
 				}
 				// Stream closed while we still need more data.
@@ -66,7 +66,7 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Decode the next message from the stream.
 	pub async fn decode<T: Decode<V> + Debug>(&mut self) -> Result<T, Error>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		std::future::poll_fn(|cx| self.poll_decode(cx)).await
 	}
@@ -74,7 +74,7 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Poll for the next message unless the stream is closed cleanly first.
 	pub fn poll_decode_maybe<T: Decode<V> + Debug>(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<T>, Error>>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		if !ready!(self.poll_has_more(cx))? {
 			return Poll::Ready(Ok(None));
@@ -86,7 +86,7 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Decode the next message unless the stream is closed.
 	pub async fn decode_maybe<T: Decode<V> + Debug>(&mut self) -> Result<Option<T>, Error>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		std::future::poll_fn(|cx| self.poll_decode_maybe(cx)).await
 	}
@@ -94,11 +94,11 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Poll for the next message without consuming it.
 	pub fn poll_decode_peek<T: Decode<V> + Debug>(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, Error>>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		loop {
-			let mut cursor = io::Cursor::new(&self.buffer);
-			match T::decode(&mut cursor, self.version.clone()) {
+			let mut r = Decoder::new(&self.buffer, self.version.into());
+			match T::decode(&mut r, self.version) {
 				Ok(msg) => return Poll::Ready(Ok(msg)),
 				Err(DecodeError::Short) if !ready!(self.poll_read_more(cx))? => {
 					return Poll::Ready(Err(DecodeError::Short.into()));
@@ -112,7 +112,7 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Decode the next message from the stream without consuming it.
 	pub async fn decode_peek<T: Decode<V> + Debug>(&mut self) -> Result<T, Error>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		std::future::poll_fn(|cx| self.poll_decode_peek(cx)).await
 	}
@@ -123,7 +123,7 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 		cx: &mut Context<'_>,
 	) -> Poll<Result<Option<T>, Error>>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		if !ready!(self.poll_has_more(cx))? {
 			return Poll::Ready(Ok(None));
@@ -135,7 +135,7 @@ impl<S: crate::transport::poll::RecvStream, V: StreamCodes> Reader<S, V> {
 	/// Peek the next message unless the stream is closed.
 	pub async fn decode_peek_maybe<T: Decode<V> + Debug>(&mut self) -> Result<Option<T>, Error>
 	where
-		V: Clone,
+		V: Into<Form> + Copy,
 	{
 		std::future::poll_fn(|cx| self.poll_decode_peek_maybe(cx)).await
 	}

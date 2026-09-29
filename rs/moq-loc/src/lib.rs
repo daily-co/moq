@@ -167,11 +167,11 @@ pub fn decode(mut buf: Bytes) -> Result<Frame, Error> {
 /// catalog timescale to interpret `timestamp`.
 pub fn encode(timestamp: u64, payload: &[u8]) -> Result<Bytes, Error> {
 	let mut props = BytesMut::with_capacity(16);
-	VarInt::try_from(PROP_TIMESTAMP)?.encode_quic(&mut props)?;
-	VarInt::try_from(timestamp)?.encode_quic(&mut props)?;
+	VarInt::from(PROP_TIMESTAMP).encode_quic(&mut props)?;
+	VarInt::from(timestamp).encode_quic(&mut props)?;
 
 	let mut out = BytesMut::with_capacity(props.len() + payload.len() + 8);
-	VarInt::try_from(props.len() as u64)?.encode_quic(&mut out)?;
+	VarInt::from(props.len()).encode_quic(&mut out)?;
 	out.extend_from_slice(&props);
 	out.extend_from_slice(payload);
 
@@ -184,7 +184,7 @@ mod tests {
 
 	/// Test helper: write a u64 as a QUIC varint into `buf`.
 	fn write_varint(buf: &mut BytesMut, value: u64) {
-		VarInt::try_from(value).unwrap().encode_quic(buf).unwrap();
+		VarInt::from(value).encode_quic(buf).unwrap();
 	}
 
 	#[test]

@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
 	AsPath, Error, Path, PathOwned, Timescale, Timestamp, bandwidth,
-	coding::{Decode, Reader, Stream},
+	coding::{Reader, Stream},
 	lite,
 	track::{Position, Subscription},
 };
@@ -440,8 +440,7 @@ impl<S: crate::transport::poll::Session> Subscriber<S> {
 
 	/// Decode one datagram body and hand it to the matching subscription's producer.
 	fn route_datagram(&self, payload: bytes::Bytes) -> Result<(), Error> {
-		let mut buf = payload;
-		let dg = lite::Datagram::decode(&mut buf, self.version)?;
+		let dg = lite::Datagram::decode(payload, self.version)?;
 
 		// Write through the map rather than cloning the entry out: a `TrackEntry` clone
 		// is a handful of atomic bumps on every datagram, and a producer held past its
@@ -904,9 +903,10 @@ impl FrameIngest {
 					};
 				}
 				IngestPhase::Size { timestamp } => {
-					let Some(size) = ready!(reader.poll_decode_maybe::<u64>(&mut cx))? else {
+					let Some(size) = ready!(reader.poll_decode_maybe::<crate::coding::VarInt>(&mut cx))? else {
 						return Poll::Ready(Ok(()));
 					};
+					let size = size.into_inner();
 					// `create_frame_owned` is the allocation chokepoint and rejects an
 					// oversized `size` before allocating, so no pre-check is needed. No
 					// wire timestamp (pre-lite-05) means local receive time.
@@ -1484,12 +1484,18 @@ mod tests {
 		let mut responses = Vec::new();
 		if started {
 			lite::SubscribeResponse::Start(lite::SubscribeStart { group: 0 })
-				.encode(&mut responses, version)
+				.encode(
+					&mut crate::coding::Encoder::new(&mut responses, version.into()),
+					version,
+				)
 				.unwrap();
 		}
 		if clean {
 			lite::SubscribeResponse::End(lite::SubscribeEnd { group: 0, streams: 0 })
-				.encode(&mut responses, version)
+				.encode(
+					&mut crate::coding::Encoder::new(&mut responses, version.into()),
+					version,
+				)
 				.unwrap();
 		}
 		responses
@@ -1689,10 +1695,10 @@ mod tests {
 		let writes = session.log.writes.lock().unwrap().clone();
 		let mut wire = writes.as_slice();
 		assert_eq!(
-			lite::ControlType::decode(&mut wire, VERSION).unwrap(),
+			crate::coding::decode_buf(&mut wire, VERSION, lite::ControlType::decode).unwrap(),
 			lite::ControlType::Subscribe
 		);
-		let msg = lite::Subscribe::decode(&mut wire, VERSION).unwrap();
+		let msg = crate::coding::decode_buf(&mut wire, VERSION, lite::Subscribe::decode).unwrap();
 		assert_eq!(msg.id, 0);
 		assert_eq!(msg.track, "catalog.json");
 		assert!(wire.is_empty(), "a second SUBSCRIBE trailed the first");
@@ -1783,10 +1789,10 @@ mod tests {
 		let wire = h.wire();
 		let mut wire = wire.as_slice();
 		assert_eq!(
-			lite::ControlType::decode(&mut wire, Version::Lite05).unwrap(),
+			crate::coding::decode_buf(&mut wire, Version::Lite05, lite::ControlType::decode).unwrap(),
 			lite::ControlType::Subscribe
 		);
-		let msg = lite::Subscribe::decode(&mut wire, Version::Lite05).unwrap();
+		let msg = crate::coding::decode_buf(&mut wire, Version::Lite05, lite::Subscribe::decode).unwrap();
 		// The group bounds survive; only the frame offsets are widened away.
 		assert_eq!((msg.start_group, msg.end_group), (Some(5), Some(5)));
 		assert_eq!((msg.start_frame, msg.end_frame), (0, None));
@@ -1813,10 +1819,10 @@ mod tests {
 		let wire = h.wire();
 		let mut wire = wire.as_slice();
 		assert_eq!(
-			lite::ControlType::decode(&mut wire, Version::Lite06).unwrap(),
+			crate::coding::decode_buf(&mut wire, Version::Lite06, lite::ControlType::decode).unwrap(),
 			lite::ControlType::Subscribe
 		);
-		let msg = lite::Subscribe::decode(&mut wire, Version::Lite06).unwrap();
+		let msg = crate::coding::decode_buf(&mut wire, Version::Lite06, lite::Subscribe::decode).unwrap();
 		assert_eq!((msg.start_frame, msg.end_frame), (3, Some(7)));
 	}
 
@@ -2025,7 +2031,7 @@ mod tests {
 		// SUBSCRIBE_UPDATE rides the subscribe stream with no control type ahead of it.
 		let wire = h.wire();
 		let mut wire = &wire[established..];
-		let msg = lite::SubscribeUpdate::decode(&mut wire, Version::Lite05).unwrap();
+		let msg = crate::coding::decode_buf(&mut wire, Version::Lite05, lite::SubscribeUpdate::decode).unwrap();
 		assert_eq!((msg.start_group, msg.start_frame), (Some(5), 0));
 		assert_eq!((msg.end_group, msg.end_frame), (Some(5), None));
 	}
@@ -2722,12 +2728,16 @@ mod tests {
 			origin: crate::Hop::new(9).unwrap(),
 			active: 1,
 		}
-		.encode(&mut script, VERSION)
+		.encode(&mut crate::coding::Encoder::new(&mut script, VERSION.into()), VERSION)
 		.unwrap();
 		// An unknown announce type with an empty body, which decodes as `Skipped`.
 		script.extend([0x3f, 0x00]);
-		start("a").encode(&mut script, VERSION).unwrap();
-		start("b").encode(&mut script, VERSION).unwrap();
+		start("a")
+			.encode(&mut crate::coding::Encoder::new(&mut script, VERSION.into()), VERSION)
+			.unwrap();
+		start("b")
+			.encode(&mut crate::coding::Encoder::new(&mut script, VERSION.into()), VERSION)
+			.unwrap();
 
 		let origin = origin::Config::new(crate::Hop::new(1).unwrap()).produce();
 		let consumer = origin.consume();
