@@ -45,7 +45,7 @@ transport, benchmark tooling); worktrees isolate commits, not semantics.
 - [Session death parity](/quest/m1/session-death.md) - a local close ends tracks cleanly in both languages, and JS group readers see the session's error on session death
 - [Watch video guards](/quest/m1/watch-video-guards.md) - promoting a video track holds the last picture, and an older group never reaches the codec between live deltas
 - [Watch decoder recovery](/quest/m1/watch-decoder-recovery.md) - one malformed packet rebuilds the audio or video decoder instead of ending playback
-- [Demo under strict CSP](/quest/m1/demo-strict-csp.md) - production demo builds run under a strict CSP and load the worklets from their own origin
+- [Dogfood hosted worklets](/quest/m1/dogfood-assets.md) - moq.dev and the moq.pro dashboard host the worklets and call `assets()` after the release
 - [More tests under load](/quest/m1/test-flakes-2.md) - the second round of load-only failures, fixed at the cause
 - [Interop audio cold start](/quest/m1/interop-audio-cold-start.md) - the interop audio tone check stops failing on cold start, fixed at its cause
 - [Auth outage clock](/quest/m1/auth-outage-clock.md) - the relay and moq-auth outage tests run on a paused clock again and assert both bounds of `expires`
@@ -173,7 +173,7 @@ transport, benchmark tooling); worktrees isolate commits, not semantics.
 - [Release profile](/quest/m1/release-profile.md) - every release build gets fat LTO, one codegen unit, and stripping from the workspace profile instead of three script exports
 - [Size report](/quest/m1/size-report.md) - a nightly job reports every shipped artifact's size, native and JS, and alerts when one grows
 - [Publish lazy file source](/quest/m1/publish-lazy-file.md) - a camera or screen `<moq-publish>` stops downloading mediabunny's ~99 KB gzip
-- [JS bundle trims](/quest/m1/js-bundle-trims.md) - minified worklets, no bowser, split pako, and lazy qmux and captions
+- [JS bundle trims](/quest/m1/js-bundle-trims.md) - no bowser, split pako, and lazy qmux and captions
 - [Slim Docker images](/quest/m1/docker-slim.md) - images carry only the package's nix closure, not ~170 MiB of nixos/nix
 - [Bindings size profile](/quest/m1/ffi-size-profile.md) - a benchmark decides whether the moq-ffi builds ship at opt-level "s", which halves the dylib
 - [Go mirror delivery](/quest/m1/go-mirror-delivery.md) - the Go binding's staticlibs stop growing git history by ~210 MiB per release

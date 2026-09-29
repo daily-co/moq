@@ -25,6 +25,8 @@ export function worklet(alias?: Record<string, string>): Plugin {
 			write: false,
 			format: "esm",
 			target: "esnext",
+			// A consumer can't minify code inlined as a string, so builds do it here; dev stays readable.
+			minify: production,
 			alias: alias,
 		});
 		return result.outputFiles[0].text;
