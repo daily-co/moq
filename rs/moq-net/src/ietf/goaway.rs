@@ -189,6 +189,6 @@ mod tests {
 
 		assert_eq!(decoded.new_session_uri, "moqt://relay.example/");
 		assert_eq!(decoded.timeout, 5000);
-		assert!(!!bytes.is_empty(), "trailing Request ID should be consumed");
+		assert!(bytes.is_empty(), "trailing Request ID should be consumed");
 	}
 }

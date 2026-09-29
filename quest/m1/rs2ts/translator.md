@@ -62,5 +62,4 @@ translates. Wire: none.
 
 ## Required
 
-
 - [JS U64](/quest/m1/rs2ts/js-varint.md) - the TypeScript `U64` that Rust `u64` maps to

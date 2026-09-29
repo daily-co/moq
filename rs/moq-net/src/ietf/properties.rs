@@ -194,7 +194,7 @@ mod tests {
 		Encoder::new(&mut buf, Version::Draft17.into()).varint(5000u64).unwrap(); // value
 		let mut bytes = bytes::Bytes::from(buf);
 		crate::coding::decode_buf(&mut bytes, Version::Draft17, Properties::decode).unwrap();
-		assert!(!!bytes.is_empty());
+		assert!(bytes.is_empty());
 	}
 
 	#[test]
@@ -206,7 +206,7 @@ mod tests {
 		buf.extend_from_slice(&[0x01, 0x02, 0x03]); // value bytes
 		let mut bytes = bytes::Bytes::from(buf);
 		crate::coding::decode_buf(&mut bytes, Version::Draft17, Properties::decode).unwrap();
-		assert!(!!bytes.is_empty());
+		assert!(bytes.is_empty());
 	}
 
 	#[test]
@@ -225,7 +225,7 @@ mod tests {
 
 		let mut bytes = bytes::Bytes::from(buf);
 		crate::coding::decode_buf(&mut bytes, Version::Draft17, Properties::decode).unwrap();
-		assert!(!!bytes.is_empty());
+		assert!(bytes.is_empty());
 	}
 
 	#[test]
@@ -247,7 +247,7 @@ mod tests {
 			crate::coding::decode_buf(&mut bytes, Version::Draft18, Properties::decode).unwrap(),
 			properties
 		);
-		assert!(!!bytes.is_empty());
+		assert!(bytes.is_empty());
 	}
 
 	#[test]
@@ -294,7 +294,7 @@ mod tests {
 		let mut bytes = bytes::Bytes::from(buf);
 		let properties = crate::coding::decode_buf(&mut bytes, Version::Draft16, Properties::decode).unwrap();
 		assert_eq!(properties.group_order, Some(GroupOrder::Descending));
-		assert!(!!bytes.is_empty());
+		assert!(bytes.is_empty());
 	}
 
 	/// The group order property is delta-encoded against the timescale that precedes it,
@@ -318,6 +318,6 @@ mod tests {
 			crate::coding::decode_buf(&mut bytes, Version::Draft18, Properties::decode).unwrap(),
 			properties
 		);
-		assert!(!!bytes.is_empty());
+		assert!(bytes.is_empty());
 	}
 }
