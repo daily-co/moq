@@ -306,6 +306,23 @@ mod tests {
 		assert!(err.contains("broadcast `source`"), "{err}");
 	}
 
+	/// Wait until the export has enrolled every rendition the catalog lists.
+	///
+	/// A rendition's `.info` only shows its subscription landed: the writer takes the track
+	/// a moment later, and one that ends first is refused. The first segment is the proof,
+	/// since the writer holds it back until every pacing track has reported its groups.
+	async fn enrolled(url: &Url, recording: &tokio::task::JoinHandle<anyhow::Result<()>>) {
+		let store = super::open(url).unwrap();
+		// The store is real disk I/O, so this polls on the wall clock; nextest kills a hang.
+		while store.get_segments(hang::timeline::DEFAULT_NAME, 0).await.is_err() {
+			assert!(
+				!recording.is_finished(),
+				"the export ended before it committed a segment"
+			);
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+	}
+
 	/// What `export archive` records, `import archive` serves back group for group, and the
 	/// export ends cleanly with its broadcast.
 	#[tokio::test]
@@ -345,14 +362,7 @@ mod tests {
 			group.finish().unwrap();
 		}
 
-		// Finish only once the rendition is enrolled, which writes its `.info`.
-		tokio::time::timeout(Duration::from_secs(10), async {
-			while !dir.path().join("audio/.info").exists() {
-				tokio::time::sleep(Duration::from_millis(10)).await;
-			}
-		})
-		.await
-		.expect("the rendition is enrolled");
+		enrolled(&url, &recording).await;
 		track.finish().unwrap();
 		catalog.finish().unwrap();
 		broadcast.close();
@@ -428,13 +438,7 @@ mod tests {
 		};
 		let recording = tokio::spawn(export(origin.consume(), "live.hang".into(), CatalogFormat::Hang, args));
 
-		tokio::time::timeout(Duration::from_secs(10), async {
-			while !dir.path().join("audio/.info").exists() || !dir.path().join("audio2/.info").exists() {
-				tokio::time::sleep(Duration::from_millis(10)).await;
-			}
-		})
-		.await
-		.expect("both renditions are enrolled");
+		enrolled(&url, &recording).await;
 		first.finish().unwrap();
 		second.finish().unwrap();
 		catalog.finish().unwrap();
