@@ -27,9 +27,18 @@ served stays in `moq_net`'s track cache until the pool reclaims it. Decide
 whether expiry during a seek needs a group eviction API in `moq-net`.
 
 `moq-hls` reads a timeline from the catalog's own broadcast, and an
-`archive.replay` path only marks it non-durable. Decide whether a live
-broadcast's exporter follows `replay` to the recording for rewind, or whether
-viewers address the replay broadcast directly.
+`archive.replay` path only marks it non-durable. Decided (09-29): the exporter
+does not follow `replay`, and viewers don't address a separate replay
+broadcast. A recording is the broadcast. Under the
+[wildcard](/quest/m0/wildcard/README.md) plan the archive serves the source
+path through the root claim, and a live announcement shadows it. So when live
+ends, `moq-hls` resolves the same name and falls through to the recording:
+playlists keep serving for rewind and for players finishing the last
+segments. `moq-hls` gains no linger (the `hls-linger` quest was dropped,
+because an unannounced broadcast can't be FETCHed and a linger would only
+serve the cache). Test the handover: a live HLS session keeps its playlist
+URIs and media sequence numbers when the name moves from the live publisher to
+the archive.
 
 ## Required
 
