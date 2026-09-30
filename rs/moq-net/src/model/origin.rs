@@ -1139,6 +1139,8 @@ pub(crate) fn interest_prefixes(allowed: &Patterns) -> Vec<PathOwned> {
 pub(crate) struct Hidden {
 	/// Report hidden routes too.
 	include: bool,
+	/// Measure visibility from the request prefix instead of authorization heads.
+	from: Option<PathOwned>,
 	/// Report only what a feed scoped to these heads hides, for a stream that tops
 	/// up a feed already carrying everything visible from them.
 	beyond: Option<Vec<PathOwned>>,
@@ -1147,7 +1149,8 @@ pub(crate) struct Hidden {
 impl Hidden {
 	/// Whether a cursor hanging at `heads` reports a route at `prefix`.
 	fn discovers(&self, heads: &[PathOwned], prefix: &Path) -> bool {
-		(self.include || !hides(heads, prefix)) && self.beyond.as_ref().is_none_or(|outer| hides(outer, prefix))
+		(self.include || !hides(self.from.as_ref().map(std::slice::from_ref).unwrap_or(heads), prefix))
+			&& self.beyond.as_ref().is_none_or(|outer| hides(outer, prefix))
 	}
 
 	/// This rule for a cursor reading through `mount`, whose heads sit on the
@@ -1159,6 +1162,7 @@ impl Hidden {
 		});
 		Self {
 			include: self.include,
+			from: self.from.as_ref().and_then(|head| mount.translate_head(head)),
 			beyond,
 		}
 	}
@@ -1526,6 +1530,7 @@ impl Producer {
 		Ok(Dynamic {
 			announcement,
 			state: serve,
+			_keepalive: self.tasks.keepalive(),
 		})
 	}
 
@@ -1900,9 +1905,12 @@ impl Drop for AnnounceProducer {
 /// failover, and teardown run here; the route table and announce cursors update
 /// synchronously when a route is announced or retracted.
 ///
-/// It holds no [`Producer`] clone, so it never keeps the origin alive. Dropping
-/// it aborts active fronts, rejects pending requests, ends announcements, and
-/// makes subsequent producer mutations fail with [`Error::Closed`].
+/// It holds no [`Producer`] clone, so it never keeps the origin alive. It
+/// finishes once every owner is gone: each [`Producer`] clone, published
+/// broadcast, and [`Dynamic`]. Read handles ([`Consumer`], [`AnnounceConsumer`])
+/// are not owners. Dropping it aborts active fronts, rejects pending requests,
+/// ends announcements, and makes subsequent producer mutations fail with
+/// [`Error::Closed`].
 /// `moq_tokio::origin::spawn` handles construction and driving for Tokio callers.
 #[must_use = "poll the driver or the origin makes no progress"]
 pub struct Driver {
@@ -1929,8 +1937,9 @@ impl Driver {
 	/// Process ready origin work using caller-supplied monotonic time.
 	///
 	/// See [`crate::time::Driver`] for the contract. Finishes with
-	/// [`Error::Closed`] once every producer handle has dropped and the
-	/// remaining lifecycle work has drained.
+	/// [`Error::Closed`] once every owner (a [`Producer`] clone, published
+	/// broadcast, or [`Dynamic`]) has dropped and the remaining lifecycle work
+	/// has drained.
 	pub fn poll(&mut self, now: Instant, waiter: &kio::Waiter) -> Result<Option<Instant>, Error> {
 		self.timers.advance(now);
 		let result = self.state.poll(waiter);
@@ -2090,6 +2099,7 @@ fn warm_copy(source: &track::Consumer, head: Option<&WarmGroup>) -> Option<WarmC
 		.map(|(group, _)| group.sequence)
 		.max();
 	let mut edge = None;
+	let mut first = None;
 
 	// A spliced copy hides the group it continued (its halves sit in two segments), so
 	// carry the previous edge over when the copy has no version of it at all. First,
@@ -2100,11 +2110,13 @@ fn warm_copy(source: &track::Consumer, head: Option<&WarmGroup>) -> Option<WarmC
 		let is_latest = latest.is_none_or(|latest| head.sequence >= latest);
 		if head.is_finished() {
 			let _ = track.adopt_group(head.clone(), true);
+			first = Some(head.sequence);
 			if is_latest {
 				edge = Some(WarmGroup(head.clone()));
 			}
 		} else if is_latest {
 			edge = warm_rebuild(&track, head, None);
+			first = edge.as_ref().map(|_| head.sequence);
 		}
 	}
 
@@ -2126,10 +2138,17 @@ fn warm_copy(source: &track::Consumer, head: Option<&WarmGroup>) -> Option<WarmC
 			// Mid-transfer backlog, or a continuation with no head to complete it.
 			None
 		};
+		if visible && let Some(warm) = &warm {
+			first = Some(first.map_or(warm.0.sequence, |first: u64| first.min(warm.0.sequence)));
+		}
 		if is_latest {
 			edge = warm;
 		}
 	}
+	// Arrival order can put the live group before cached history. Declare the
+	// cache's oldest group so a new subscription cannot resolve its floor from
+	// whichever group arrived first and permanently skip that history.
+	track.start_at(first).ok()?;
 	let dynamic = track.dynamic();
 	Some(WarmCopy {
 		track,
@@ -3328,11 +3347,18 @@ struct PendingBroadcast {
 ///
 /// Drop it to retract the route and reject the requests still waiting to be
 /// served; [`update`](Self::update) re-prices it in place.
+///
+/// It keeps the origin's [`Driver`] running, like a published broadcast: a
+/// handler can drop every [`Producer`] and keep serving.
 #[must_use = "dropping an origin::Dynamic retracts the route"]
 pub struct Dynamic {
 	/// The advertisement, retracted on drop.
 	announcement: AnnounceProducer,
 	state: kio::Shared<ServeState>,
+	/// Producer-side children pin their parent where no cycle exists. The
+	/// origin's state holds only the [`ServeState`], never this handle, so the
+	/// driver cannot keep itself alive.
+	_keepalive: Keepalive,
 }
 
 impl Dynamic {
@@ -3752,7 +3778,21 @@ impl Consumer {
 	/// A clone whose [`announced`](Self::announced) reports only the routes a feed
 	/// from `outer` hides, for a stream topping up that feed.
 	pub(crate) fn beyond(mut self, outer: &Consumer) -> Self {
-		self.hidden.beyond = Some(interest_prefixes(&outer.scope.allowed));
+		self.hidden.beyond = Some(
+			outer
+				.hidden
+				.from
+				.clone()
+				.map(|head| vec![head])
+				.unwrap_or_else(|| interest_prefixes(&outer.scope.allowed)),
+		);
+		self
+	}
+
+	/// Set wire discovery visibility relative to this consumer's requested root.
+	pub(crate) fn discovery(mut self, hidden: bool) -> Self {
+		self.hidden.include = hidden;
+		self.hidden.from = Some(self.root.clone());
 		self
 	}
 
@@ -3849,7 +3889,12 @@ impl Consumer {
 			let allowed = mount.translate(&self.scope.allowed);
 			// Hidden at the mount point means hidden throughout: the dot segment is above
 			// everything the mount holds. A top-up feed's rule moves onto the target.
-			if allowed.is_empty() || !(self.hidden.include || !hides(&heads, &mount.at)) {
+			if allowed.is_empty()
+				|| !(self.hidden.include
+					|| !hides(
+						self.hidden.from.as_ref().map(std::slice::from_ref).unwrap_or(&heads),
+						&mount.at,
+					)) {
 				continue;
 			}
 			cursors.push(cursor(
@@ -7462,6 +7507,32 @@ mod tests {
 		);
 		drop(broadcast);
 		assert!(matches!(driver.poll(Instant::now(), &waiter), Err(Error::Closed)));
+	}
+
+	/// A handler holding only its `Dynamic` keeps serving once every producer
+	/// handle drops, and the driver finishes once the handler is gone too.
+	#[tokio::test]
+	async fn a_dynamic_keeps_the_driver_running() {
+		let (producer, driver) = Producer::new(Config::new(origin(1)));
+		let run = tokio::spawn(crate::time::run(driver));
+		let consumer = producer.consume();
+		let server = producer.dynamic("room", Route::default()).unwrap();
+		drop(producer);
+
+		let pending = consumer.request_broadcast("room/alice");
+		let request = queued(&server).await;
+		let source = broadcast::Info::new().produce();
+		request.accept(&source);
+		let resolved = pending.await.expect("the dynamic still serves");
+
+		drop(resolved);
+		drop(source);
+		drop(server);
+		tokio::time::timeout(Duration::from_secs(5), run)
+			.await
+			.expect("driver must finish once the dynamic is gone")
+			.unwrap();
+		drop(consumer);
 	}
 
 	#[test]

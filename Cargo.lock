@@ -4333,6 +4333,7 @@ dependencies = [
  "moq-tokio",
  "moq-transcode",
  "moq-video",
+ "mpeg2ts",
  "object_store",
  "pollster",
  "reqwest",
@@ -4512,6 +4513,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-test",
  "url",
  "web-async",
  "webm-iterable",
@@ -4668,6 +4670,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "socket2 0.6.5",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
@@ -4711,6 +4714,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-test",
  "url",
  "uuid",
 ]
@@ -4729,7 +4733,6 @@ dependencies = [
  "moq-net",
  "moq-tokio",
  "rand 0.10.3",
- "rml_amf0",
  "rustls",
  "sha2",
  "socket2 0.6.5",
@@ -4777,6 +4780,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
@@ -4842,6 +4846,7 @@ dependencies = [
  "serde",
  "serde_with",
  "sha2",
+ "socket2 0.6.5",
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
@@ -7349,16 +7354,6 @@ dependencies = [
  "crossbeam-utils",
  "portable-atomic",
  "portable-atomic-util",
-]
-
-[[package]]
-name = "rml_amf0"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63551cfcd4d1f42733c190e4b58dd268b1eacb73410d9afbf62784aa12cac240"
-dependencies = [
- "byteorder",
- "thiserror 1.0.69",
 ]
 
 [[package]]
