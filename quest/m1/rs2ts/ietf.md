@@ -9,7 +9,7 @@ the hand-written js/net IETF code (about 8.7k lines) is deleted, with
 ## Plan
 
 Values above 2^53 are legal on the IETF wire (request ids, track aliases);
-they stay exact as `VarInt` and only fail where code converts them to
+they stay exact as `U64` and only fail where code converts them to
 `number`.
 
 Public API: breaks `@moq/net`; retargets to `dev`. Wire: none.
@@ -18,3 +18,4 @@ Public API: breaks `@moq/net`; retargets to `dev`. Wire: none.
 
 - [Generated lite](/quest/m1/rs2ts/lite.md) - the pipeline this reuses
 - [Sans-IO IETF session](/quest/m1/rs2ts/sans-io/ietf.md) - the session shape it translates
+- [IETF parameters](/quest/m1/rs2ts/ietf-params.md) - the concrete parameter codec it translates
