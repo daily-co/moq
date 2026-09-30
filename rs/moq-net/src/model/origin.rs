@@ -1566,6 +1566,7 @@ impl Producer {
 		Ok(Dynamic {
 			announcement,
 			state: serve,
+			_keepalive: self.tasks.keepalive(),
 		})
 	}
 
@@ -1939,9 +1940,12 @@ impl Drop for AnnounceProducer {
 /// failover, and teardown run here; the route table and announce cursors update
 /// synchronously when a route is announced or retracted.
 ///
-/// It holds no [`Producer`] clone, so it never keeps the origin alive. Dropping
-/// it aborts active fronts, rejects pending requests, ends announcements, and
-/// makes subsequent producer mutations fail with [`Error::Closed`].
+/// It holds no [`Producer`] clone, so it never keeps the origin alive. It
+/// finishes once every owner is gone: each [`Producer`] clone, published
+/// broadcast, and [`Dynamic`]. Read handles ([`Consumer`], [`AnnounceConsumer`])
+/// are not owners. Dropping it aborts active fronts, rejects pending requests,
+/// ends announcements, and makes subsequent producer mutations fail with
+/// [`Error::Closed`].
 /// `moq_tokio::origin::spawn` handles construction and driving for Tokio callers.
 #[must_use = "poll the driver or the origin makes no progress"]
 pub struct Driver {
@@ -1968,8 +1972,9 @@ impl Driver {
 	/// Process ready origin work using caller-supplied monotonic time.
 	///
 	/// See [`crate::time::Driver`] for the contract. Finishes with
-	/// [`Error::Closed`] once every producer handle has dropped and the
-	/// remaining lifecycle work has drained.
+	/// [`Error::Closed`] once every owner (a [`Producer`] clone, published
+	/// broadcast, or [`Dynamic`]) has dropped and the remaining lifecycle work
+	/// has drained.
 	pub fn poll(&mut self, now: Instant, waiter: &kio::Waiter) -> Result<Option<Instant>, Error> {
 		self.timers.advance(now);
 		let result = self.state.poll(waiter);
@@ -3454,11 +3459,18 @@ struct PendingBroadcast {
 ///
 /// Drop it to retract the route and reject the requests still waiting to be
 /// served; [`update`](Self::update) re-prices it in place.
+///
+/// It keeps the origin's [`Driver`] running, like a published broadcast: a
+/// handler can drop every [`Producer`] and keep serving.
 #[must_use = "dropping an origin::Dynamic retracts the route"]
 pub struct Dynamic {
 	/// The advertisement, retracted on drop.
 	announcement: AnnounceProducer,
 	state: kio::Shared<ServeState>,
+	/// Producer-side children pin their parent where no cycle exists. The
+	/// origin's state holds only the [`ServeState`], never this handle, so the
+	/// driver cannot keep itself alive.
+	_keepalive: Keepalive,
 }
 
 impl Dynamic {
@@ -5710,7 +5722,7 @@ mod tests {
 		let mut subscription = subscribing.await.unwrap().expect("subscribe");
 		subscription.recv_group().await.unwrap().expect("the live group");
 		drop(subscription);
-		tokio::time::timeout(Duration::from_secs(1), source.unused())
+		tokio::time::timeout(Duration::from_secs(1), source.demand().unused())
 			.await
 			.expect("parked")
 			.expect("source open");
@@ -5763,7 +5775,7 @@ mod tests {
 		let mut subscription = subscribing.await.unwrap().expect("subscribe");
 		subscription.recv_group().await.unwrap().expect("the catalog");
 		drop(subscription);
-		tokio::time::timeout(Duration::from_secs(1), source.unused())
+		tokio::time::timeout(Duration::from_secs(1), source.demand().unused())
 			.await
 			.expect("parked")
 			.expect("source open");
@@ -5921,7 +5933,7 @@ mod tests {
 
 			drop(reading);
 			drop(subscription);
-			tokio::time::timeout(Duration::from_secs(1), source.unused())
+			tokio::time::timeout(Duration::from_secs(1), source.demand().unused())
 				.await
 				.expect("parked")
 				.expect("source open");
@@ -5960,7 +5972,7 @@ mod tests {
 
 		// Parked: the source copy goes, the delivered group stays warm. The source
 		// then tears its idle track down, so a returning reader asks it afresh.
-		tokio::time::timeout(Duration::from_secs(1), source.unused())
+		tokio::time::timeout(Duration::from_secs(1), source.demand().unused())
 			.await
 			.expect("parked")
 			.expect("source open");
@@ -7369,7 +7381,7 @@ mod tests {
 		drop(group);
 		drop(subscription);
 
-		tokio::time::timeout(Duration::from_secs(1), track.unused())
+		tokio::time::timeout(Duration::from_secs(1), track.demand().unused())
 			.await
 			.expect("source unused should resolve far below TRACK_IDLE_LINGER")
 			.expect("source closed");
@@ -7389,7 +7401,7 @@ mod tests {
 			.expect("track ended early");
 		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"cached");
 
-		tokio::time::timeout(Duration::from_secs(1), track.used())
+		tokio::time::timeout(Duration::from_secs(1), track.demand().used())
 			.await
 			.expect("returning reader re-splices the source")
 			.expect("source closed");
@@ -7448,7 +7460,7 @@ mod tests {
 		drain(&mut subscription);
 		drop(subscription);
 
-		tokio::time::timeout(Duration::from_secs(1), source.unused())
+		tokio::time::timeout(Duration::from_secs(1), source.demand().unused())
 			.await
 			.expect("parked")
 			.expect("source open");
@@ -7518,7 +7530,7 @@ mod tests {
 		drop(group);
 		drop(subscription);
 
-		tokio::time::timeout(Duration::from_secs(5), track.unused())
+		tokio::time::timeout(Duration::from_secs(5), track.demand().unused())
 			.await
 			.expect("chained unused should resolve far below TRACK_IDLE_LINGER")
 			.expect("source closed");
@@ -7537,7 +7549,7 @@ mod tests {
 			.subscribe(track::Subscription::default().with_max_age(Duration::from_secs(3600)))
 			.await
 			.expect("resubscribe");
-		tokio::time::timeout(Duration::from_secs(5), track.used())
+		tokio::time::timeout(Duration::from_secs(5), track.demand().used())
 			.await
 			.expect("resubscribe should reach the leaf")
 			.expect("source open");
@@ -7552,7 +7564,7 @@ mod tests {
 		drop(group);
 		drop(subscription);
 
-		tokio::time::timeout(Duration::from_secs(5), track.unused())
+		tokio::time::timeout(Duration::from_secs(5), track.demand().unused())
 			.await
 			.expect("second chained unused should resolve far below TRACK_IDLE_LINGER")
 			.expect("source closed");
@@ -7567,7 +7579,7 @@ mod tests {
 		let fetch = edge_resolved.track("video").unwrap().fetch_group(2, None);
 		let mut fetch = std::pin::pin!(fetch);
 		assert!(futures::poll!(fetch.as_mut()).is_pending(), "fetch should re-splice");
-		tokio::time::timeout(Duration::from_secs(5), track.used())
+		tokio::time::timeout(Duration::from_secs(5), track.demand().used())
 			.await
 			.expect("fetch should reach the leaf")
 			.expect("source open");
@@ -7714,6 +7726,32 @@ mod tests {
 		);
 		drop(broadcast);
 		assert!(matches!(driver.poll(Instant::now(), &waiter), Err(Error::Closed)));
+	}
+
+	/// A handler holding only its `Dynamic` keeps serving once every producer
+	/// handle drops, and the driver finishes once the handler is gone too.
+	#[tokio::test]
+	async fn a_dynamic_keeps_the_driver_running() {
+		let (producer, driver) = Producer::new(Config::new(origin(1)));
+		let run = tokio::spawn(crate::time::run(driver));
+		let consumer = producer.consume();
+		let server = producer.dynamic("room", Route::default()).unwrap();
+		drop(producer);
+
+		let pending = consumer.request_broadcast("room/alice");
+		let request = queued(&server).await;
+		let source = broadcast::Info::new().produce();
+		request.accept(&source);
+		let resolved = pending.await.expect("the dynamic still serves");
+
+		drop(resolved);
+		drop(source);
+		drop(server);
+		tokio::time::timeout(Duration::from_secs(5), run)
+			.await
+			.expect("driver must finish once the dynamic is gone")
+			.unwrap();
+		drop(consumer);
 	}
 
 	#[test]
