@@ -18,17 +18,14 @@ on stream errors. WebTransport sessions keep the mapping they need.
   requirements already admit the patch releases), and the moq-tokio
   `stream_code.rs` test, which asserts a refused stream's code arrives
   verbatim over raw QUIC, goes green.
-- Mixed versions: this is a wire break, so it stays on `dev`. An older peer
-  reads a fixed peer's plain codes as invalid, which moq-net reports as
-  `Error::Transport`. On moq-lite that costs only the stream: a cancel reads
-  as a failure, a relay forwards INTERNAL_ERROR instead of the peer's code,
-  and a relay HTTP fetch answers 500 instead of 404. On moq-transport, a
-  release without #4602 ends the whole session when a stream is reset before
-  its header, which a fixed peer does routinely. Release #4602 on `main`
-  before any adapter release that sends raw codes.
-- A `main`-compatible subset (read raw and legacy codes, keep sending mapped
-  ones) could ship on `web-transport-moq` 1.3.x and `web-transport-iroh`
-  0.7.x without breaking anyone, if interop needs it before `dev` releases.
+- Mixed versions: this is a wire break, accepted on `dev` with no `main`
+  backport. An older peer reads a fixed peer's plain codes as invalid, which
+  moq-net reports as `Error::Transport`. On moq-lite that costs only the
+  stream: a cancel reads as a failure, a relay forwards INTERNAL_ERROR instead
+  of the peer's code, and a relay HTTP fetch answers 500 instead of 404. On
+  moq-transport, a release without #4602 ends the session when a stream is
+  reset before its header; moq never speaks moq-transport to itself, so that
+  case does not matter.
 
 Public API: none. Wire: raw QUIC stream error codes become the application's
 own values.
