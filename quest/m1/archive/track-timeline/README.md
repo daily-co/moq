@@ -38,6 +38,14 @@ Decisions:
 - HLS and DASH segments are derived at the edge from group timestamps, not
   from storage objects. Fetching extra objects is fine when they land in the
   reader's cache for the next request.
+- `moq-hls` never retries a failed timeline, because the origin already reconnects
+  transient source failures. A replacement publisher that restarts group
+  numbering is a publisher bug: a broadcast, track, or group name always means
+  the same content, and MoQ has no ETag-style invalidation
+  ([#4556](https://github.com/moq-dev/moq/pull/4556)). A failed timeline
+  fails loud instead: the reference ends every playlist with `EXT-X-ENDLIST`,
+  and another rendition's playlist ends at its last covered segment rather than
+  listing gaps.
 - HLS `EXT-X-TARGETDURATION` is fixed for the run, not the observed maximum
   #4280 shipped. This reverses that PR's decision 4 (09-28 merged-PR audit).
   The target comes from each timeline's declared duration, which replaces the
@@ -56,7 +64,6 @@ leaves two handles on one segmenter
 - [Timelines declare their segment duration](/quest/m1/archive/track-timeline/declared-duration.md) - each timeline entry declares its segment duration (reported or estimated by the publisher), replacing the root `durationMax`
 - [JS per-track timelines](/quest/m1/archive/track-timeline/js.md) - `@moq/hang` publishes and reads the same per-track timelines as Rust
 - [Fixed HLS target duration](/quest/m1/archive/track-timeline/hls-target.md) - one `EXT-X-TARGETDURATION` for the run, from the reference timeline's declared duration; an overrun is listed with a warning
-- [HLS timeline resubscribe](/quest/m1/archive/track-timeline/hls-resubscribe.md) - a transient timeline error re-subscribes instead of freezing the playlists or turning a rendition's segments into gaps
 
 ## Related
 

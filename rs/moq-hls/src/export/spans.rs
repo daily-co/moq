@@ -10,7 +10,8 @@
 //!   from more than one record.
 //!
 //! A segment resolves only once the rendition's timeline has reached past its end (or ended), so
-//! every edge and every reload agree on its content.
+//! every edge and every reload agree on its content. A failed timeline ends the rendition's
+//! playlist at its last record instead of listing the rest as gaps.
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -30,6 +31,9 @@ pub(crate) enum Content {
 	Pending,
 	/// The rendition has no content for the segment.
 	Gap,
+	/// The rendition's timeline failed before reaching the segment's end, so neither it nor any
+	/// later segment will resolve.
+	Failed,
 	/// The frames to fetch, as position ranges, keeping only those whose timestamps fall in
 	/// `filter` when set.
 	Frames {
@@ -43,14 +47,21 @@ struct State {
 	records: VecDeque<Entry>,
 	/// No more records will arrive, so nothing is pending.
 	ended: bool,
+	/// The timeline failed: no more records will arrive, and a segment past the last one fails
+	/// rather than resolving as a gap.
+	failed: bool,
 }
 
 impl State {
 	fn resolve(&self, is_video: bool, span: Range<Duration>) -> Content {
+		if self.failed && self.records.back().is_none_or(|last| last.end_time() < span.end) {
+			return Content::Failed;
+		}
 		let records = self.records.iter().collect();
+		let ended = self.ended || self.failed;
 		match is_video {
-			true => video(records, self.ended, span),
-			false => audio(records, self.ended, span),
+			true => video(records, ended, span),
+			false => audio(records, ended, span),
 		}
 	}
 }
@@ -66,6 +77,7 @@ impl Spans {
 			state: kio::Producer::new(State {
 				records: VecDeque::new(),
 				ended: false,
+				failed: false,
 			}),
 		}
 	}
@@ -112,6 +124,14 @@ impl Spans {
 	pub fn end(&self) {
 		if let Ok(mut state) = self.state.write() {
 			state.ended = true;
+		}
+	}
+
+	/// The timeline failed: segments its records cover still resolve, and later ones are
+	/// [`Content::Failed`].
+	pub fn fail(&self) {
+		if let Ok(mut state) = self.state.write() {
+			state.failed = true;
 		}
 	}
 
@@ -355,5 +375,25 @@ mod tests {
 		}
 		let state = spans.state.read();
 		assert_eq!(state.records.front().unwrap().sequence, 2);
+	}
+
+	#[test]
+	fn a_failed_timeline_resolves_only_what_its_records_cover() {
+		let spans = Spans::new();
+		for entry in gops(&[0, 2_000, 4_000], 6_000) {
+			spans.push(entry, None);
+		}
+		// Waiting on a keyframe that could still land near the boundary.
+		assert_eq!(spans.resolve(true, secs(4.0)..secs(6.0)), Content::Pending);
+
+		spans.fail();
+		assert_eq!(
+			spans.resolve(true, secs(4.0)..secs(6.0)),
+			frames(&[(Position::group(2), Position::group(3))], None)
+		);
+		assert_eq!(spans.resolve(true, secs(6.0)..secs(8.0)), Content::Failed);
+		assert_eq!(spans.resolve(false, secs(6.0)..secs(8.0)), Content::Failed);
+		let resolved = spans.poll_resolved(&kio::Waiter::noop(), true, secs(6.0)..secs(8.0));
+		assert!(resolved.is_ready(), "nothing waits on a failed timeline");
 	}
 }

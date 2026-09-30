@@ -430,18 +430,14 @@ async fn watch_timeline(
 	reference: Reference,
 	renditions: renditions::Fanout,
 ) {
-	match watch(&broadcast, &section, &reference, &renditions).await {
-		// The timeline finished cleanly: the publisher is done, so every window can end
-		// (ENDLIST) and recording cursors drain to completion.
-		Ok(()) => renditions.end_windows(),
-		// A transient error (subscription reset, relay hiccup): don't mark the windows ended;
-		// the serve path keeps serving the frozen windows.
-		Err(err) => {
-			tracing::warn!(track = %reference.1, %err, "timeline watcher error; leaving the playlists live")
-		}
+	// A failed timeline is never retried: the origin already rides out transient source
+	// failures, so an error here is final. It ends every playlist like a clean finish
+	// (`EXT-X-ENDLIST`), since a window left live would freeze players with no signal.
+	if let Err(err) = watch(&broadcast, &section, &reference, &renditions).await {
+		tracing::error!(track = %reference.1, %err, "timeline failed; ending every playlist");
 	}
-	// The timeline stream is over either way: close so recording cursors terminate instead of
-	// parking forever (the serve path still reads the last windows).
+	// Recording cursors drain what is listed and end instead of parking.
+	renditions.end_windows();
 	renditions.close_windows();
 }
 
@@ -2538,5 +2534,196 @@ mod tests {
 			.await
 			.expect("renditions cursor resolves");
 		assert!(ended.is_none(), "renditions cursor ends when the broadcast closes");
+	}
+
+	/// A two-second GOP record: record `n` covers group `n` from `2n` seconds.
+	fn gop(sequence: u64) -> hang::timeline::Record {
+		hang::timeline::Record::new(
+			sequence,
+			sequence * 2_000,
+			2_000,
+			hang::timeline::Position::group(sequence),
+			hang::timeline::Position::group(sequence + 1),
+		)
+	}
+
+	/// A `video0` reference and a `video1` rendition over hand-published timelines, reconciled and
+	/// watched the way `watch_catalog` does. Nothing serves the media, so a segment fetch is a miss.
+	struct Failing {
+		broadcast: moq_net::broadcast::Producer,
+		renditions: renditions::Producer,
+		watcher: tokio::task::JoinHandle<()>,
+	}
+
+	impl Failing {
+		fn new() -> Self {
+			let broadcast = moq_net::broadcast::Info::new().produce();
+			let upstream = Upstream {
+				source: moq_mux::Source::new(produce_origin().consume(), "live"),
+				broadcast: broadcast.consume(),
+			};
+			let mut catalog = moq_mux::catalog::hang::Catalog::default();
+			for name in ["video0", "video1"] {
+				catalog.video.renditions.insert(name.to_string(), video_config());
+			}
+			let archive = archive(&["video0", "video1"]);
+			catalog.archive = Some(archive.clone());
+
+			let renditions = renditions::Producer::new(Config::default().window);
+			renditions.sync(&upstream, &catalog);
+			let watcher = tokio::spawn(watch_timeline(
+				upstream.broadcast.clone(),
+				archive,
+				reference(&catalog).unwrap(),
+				renditions.fanout(),
+			));
+			Self {
+				broadcast,
+				renditions,
+				watcher,
+			}
+		}
+
+		/// Publish `track`'s timeline. Returns the track, to fail it, with the timeline writing to it.
+		fn publish(&self, track: &str) -> (moq_net::track::Producer, moq_mux::timeline::Producer) {
+			let track = self
+				.broadcast
+				.create_track(hang::timeline::default_name(track), moq_mux::timeline::Producer::info())
+				.unwrap();
+			let timeline = moq_mux::timeline::Producer::new(track.clone());
+			(track, timeline)
+		}
+
+		fn rendition(&self, name: &str) -> Arc<Rendition> {
+			self.renditions.get(Kind::Video, name).unwrap()
+		}
+
+		/// Wait until `name` lists segment `last`.
+		async fn listed(&self, name: &str, last: u64) -> playlist::Snapshot {
+			for _ in 0..500 {
+				let snapshot = self.rendition(name).snapshot();
+				if snapshot.segments.last().is_some_and(|s| s.segment >= last) {
+					return snapshot;
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+			panic!("{name} never listed segment {last}");
+		}
+
+		/// Wait until `name`'s playlist ends.
+		async fn finished(&self, name: &str) -> playlist::Snapshot {
+			for _ in 0..500 {
+				let snapshot = self.rendition(name).snapshot();
+				if snapshot.finished {
+					return snapshot;
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+			panic!("{name} never ended");
+		}
+
+		/// Drain `name`'s recording cursor, which must end rather than park.
+		async fn drain(&self, name: &str) {
+			let mut segments = self.rendition(name).segments();
+			let drained = tokio::time::timeout(Duration::from_secs(5), async {
+				while segments.next().await.unwrap().is_some() {}
+			})
+			.await;
+			assert!(drained.is_ok(), "{name}'s cursor parked");
+		}
+	}
+
+	impl Drop for Failing {
+		fn drop(&mut self) {
+			self.watcher.abort();
+		}
+	}
+
+	/// The timeline's publisher loses its session: the track and its open group fail.
+	fn cut(track: moq_net::track::Producer, timeline: moq_mux::timeline::Producer) {
+		drop(timeline);
+		track.abort(moq_net::Error::SessionClosed).unwrap();
+	}
+
+	fn numbers(snapshot: &playlist::Snapshot) -> Vec<u64> {
+		snapshot.segments.iter().map(|s| s.segment).collect()
+	}
+
+	// A failed rendition timeline is not retried. Its playlist ends at the last segment its
+	// records cover, rather than listing the rest as gaps, while the other renditions go on.
+	#[tokio::test(start_paused = true)]
+	async fn a_rendition_timeline_error_ends_its_playlist() {
+		let test = Failing::new();
+		let (_reference, mut video0) = test.publish("video0");
+		let (track, mut video1) = test.publish("video1");
+		for sequence in 0..4 {
+			video0.push(&gop(sequence)).unwrap();
+			video1.push(&gop(sequence)).unwrap();
+		}
+		// A segment resolves once the rendition's timeline is a snap tolerance past its end.
+		assert_eq!(numbers(&test.listed("video1", 2).await), [0, 1, 2]);
+
+		cut(track, video1);
+		for sequence in 4..7 {
+			video0.push(&gop(sequence)).unwrap();
+		}
+		let failed = test.finished("video1").await;
+		assert_eq!(numbers(&failed), [0, 1, 2, 3], "the covered segments stay listed");
+		assert!(
+			failed.segments.iter().all(|s| !s.gap),
+			"nothing past the failure is a gap"
+		);
+		test.drain("video1").await;
+
+		let reference = test.listed("video0", 6).await;
+		assert!(!reference.finished, "the other renditions go on");
+	}
+
+	// A failed reference timeline is not retried. Every playlist ends (`EXT-X-ENDLIST`) instead
+	// of freezing live, and recording cursors end.
+	#[tokio::test(start_paused = true)]
+	async fn a_reference_timeline_error_ends_every_playlist() {
+		let test = Failing::new();
+		let (track, mut video0) = test.publish("video0");
+		let (_track, mut video1) = test.publish("video1");
+		for sequence in 0..4 {
+			video0.push(&gop(sequence)).unwrap();
+			video1.push(&gop(sequence)).unwrap();
+		}
+		test.listed("video0", 3).await;
+
+		cut(track, video0);
+		assert_eq!(numbers(&test.finished("video0").await), [0, 1, 2, 3]);
+		test.finished("video1").await;
+		test.drain("video0").await;
+	}
+
+	// A malformed reference timeline fails the same way.
+	#[tokio::test(start_paused = true)]
+	async fn a_malformed_reference_timeline_ends_every_playlist() {
+		let test = Failing::new();
+		let (track, mut video0) = test.publish("video0");
+		video0.push(&gop(0)).unwrap();
+		test.listed("video0", 0).await;
+
+		let mut group = track.append_group().unwrap();
+		group.write_frame(moq_net::Timestamp::now(), &b"garbage"[..]).unwrap();
+		test.finished("video0").await;
+		test.finished("video1").await;
+	}
+
+	// A timeline subscription still waiting on its track ends with the broadcast, so nothing
+	// parks.
+	#[tokio::test(start_paused = true)]
+	async fn a_pending_timeline_subscription_ends_with_the_broadcast() {
+		let test = Failing::new();
+		// A handler keeps the unpublished timelines' requests waiting rather than refused.
+		let _handler = test.broadcast.dynamic();
+		tokio::time::sleep(Duration::from_secs(60)).await;
+		assert!(!test.rendition("video0").snapshot().finished);
+
+		test.broadcast.close();
+		test.finished("video0").await;
+		test.drain("video0").await;
 	}
 }

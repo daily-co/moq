@@ -30,7 +30,11 @@ snaps each boundary to its nearest keyframe within about a second, and a
 segment with none in range renders as `EXT-X-GAP`; audio takes every frame
 inside the segment's span. A jump in content time renders as
 `EXT-X-DISCONTINUITY`. Gaps are a fallback: a publisher wanting clean HLS
-export should align video GOPs across renditions. A broadcast
+export should align video GOPs across renditions. A timeline that fails
+(malformed, refused, or lost) is not retried, since the relay already rides out
+transient source failures. The reference timeline failing ends every playlist
+with `EXT-X-ENDLIST`, and any other rendition's timeline failing ends that
+rendition's playlist at the last segment it covers. A broadcast
 whose catalog advertises no timelines is skipped. One server exposes every
 broadcast by path:
 

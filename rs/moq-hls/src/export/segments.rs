@@ -230,7 +230,7 @@ impl Producer {
 		}
 	}
 
-	/// Mark the timeline ended (the broadcast finished cleanly): the playlist gets
+	/// Mark the timeline ended (it finished, or failed): the playlist gets
 	/// `EXT-X-ENDLIST` and cursors end once drained.
 	pub fn end(&self) {
 		if let Ok(mut state) = self.state.write() {
@@ -240,7 +240,7 @@ impl Producer {
 
 	/// Close the channel: no more rows will arrive. A [`Consumer`] drains the segments it
 	/// can still see and then ends; the serve path keeps reading the frozen window. Call after
-	/// [`end`](Self::end) on a clean finish, or on its own when the source is lost mid-stream.
+	/// [`end`](Self::end) when the timeline is over, or on its own when a rendition is retired.
 	pub fn close(&self) {
 		let _ = self.state.close();
 	}
@@ -381,7 +381,8 @@ impl Consumer {
 		self.rendition.init().await
 	}
 
-	/// The next segment, with its media; `None` once the rendition ends.
+	/// The next segment, with its media; `None` once the rendition ends, including when its
+	/// timeline failed.
 	///
 	/// Waits for the next segment to resolve on this rendition, then FETCHes and transmuxes its
 	/// frames. A segment whose groups already left the relay cache (or that is a gap for this
@@ -393,6 +394,10 @@ impl Consumer {
 				return Ok(None);
 			};
 			kio::wait(|waiter| self.rendition.poll_resolved(waiter, &row)).await;
+			// The rendition's timeline failed: it ends here, like its playlist.
+			if self.rendition.is_failed(&row) {
+				return Ok(None);
+			}
 			match self.rendition.fetch(&row).await? {
 				Some(media) => {
 					return Ok(Some(Segment {
