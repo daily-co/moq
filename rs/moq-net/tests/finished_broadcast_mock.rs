@@ -77,7 +77,7 @@ async fn round(finish_broadcast: bool) -> (Vec<Vec<u8>>, Option<moq_net::Error>)
 		}
 	});
 
-	moq_net_sim::timeout(TIMEOUT, track.used())
+	moq_net_sim::timeout(TIMEOUT, track.demand().used())
 		.await
 		.expect("no subscriber appeared")
 		.unwrap();

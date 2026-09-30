@@ -106,7 +106,7 @@ async fn round(version: &str, late: Late, final_sequence: u64) -> Outcome {
 		(frames, err, moq_net_sim::now())
 	});
 
-	moq_net_sim::timeout(TIMEOUT, track.used())
+	moq_net_sim::timeout(TIMEOUT, track.demand().used())
 		.await
 		.expect("no subscriber appeared")
 		.unwrap();

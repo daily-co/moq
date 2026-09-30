@@ -367,13 +367,9 @@ impl<S: crate::transport::poll::Session> Subscriber<S> {
 
 	/// Handle a RESTART (an explicit restart status, or a duplicate ANNOUNCE on lite-05).
 	///
-	/// The first hop of the chain identifies the original publisher. When it matches
-	/// the prior advertisement and is a real identity, the broadcast is the same
-	/// content on a new path: this session's route metadata updates in place,
-	/// in-flight tracks keep flowing, and the origin only hands over if the winner
-	/// changed. Consumers observe nothing. When the first hop differs, or is
-	/// [`Hop::UNKNOWN`](crate::Hop::UNKNOWN), the old route detaches gracefully
-	/// and a fresh one attaches, so downstream sees a real Ended + Active.
+	/// A restart carries no content claim, so this session's route re-prices in
+	/// place whatever the new chain says: in-flight tracks keep flowing and the
+	/// origin only hands over if the winner changed.
 	/// The advertisement is already live, so this can attach a route even when the
 	/// original advertisement was declined locally.
 	///
@@ -3590,6 +3586,8 @@ struct ServeLoop<S: crate::transport::poll::Session> {
 	/// through the producer's aggregate, sliced to this segment's bounds
 	/// (including the resume floor after a source change).
 	serving: track::Producer,
+	/// Watches `serving`'s subscribers, to release the copy once nobody reads it.
+	demand: track::Demand,
 	/// Serve on-demand fetches of uncached groups from this session.
 	dynamic: track::Dynamic,
 	sub: Sub<S>,
@@ -3638,6 +3636,7 @@ impl<S: crate::transport::poll::Session> ServeLoop<S> {
 		};
 		let serving = request.accept(info);
 		Self {
+			demand: serving.demand(),
 			serving,
 			dynamic,
 			sub: Sub::None,
@@ -3678,7 +3677,7 @@ impl<S: crate::transport::poll::Session> ServeLoop<S> {
 					{
 						return Poll::Ready(ServeEnd::Finished);
 					}
-					if self.fetches.is_empty() && self.serving.poll_unused(waiter).is_ready() {
+					if self.fetches.is_empty() && self.demand.poll_unused(waiter).is_ready() {
 						return Poll::Ready(ServeEnd::Idle);
 					}
 					let mut cx = std::task::Context::from_waker(waiter.waker());
@@ -3755,7 +3754,7 @@ impl<S: crate::transport::poll::Session> ServeLoop<S> {
 					// state (and its TRACK_INFO) for a reader that may never return.
 					// In-flight fetches keep it alive: work already accepted still
 					// gets finished.
-					if self.fetches.is_empty() && self.serving.poll_unused(waiter).is_ready() {
+					if self.fetches.is_empty() && self.demand.poll_unused(waiter).is_ready() {
 						return Poll::Ready(ServeEnd::Idle);
 					}
 

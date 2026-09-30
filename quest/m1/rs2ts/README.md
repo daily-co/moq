@@ -48,7 +48,7 @@ Decided in planning (2026-09-27), with the spike data in
   async-free ones translate as they stand.
 - The line lands on `dev`: the Rust refactors break moq-net's published API,
   and the translator and generated code build on them. Only the additive
-  [JS VarInt](/quest/m1/rs2ts/js-varint.md) lands on `main`.
+  JS `U64` (`js/net/src/util/u64.ts`) is on `main`, package-internal.
 - Hand-written js/net fixes keep landing until the generated path replaces
   them; it is months out.
 
@@ -58,7 +58,6 @@ js/net it replaces, measured with the [browser benchmarks](/quest/m1/browser-ben
 
 ## Required
 
-- [JS VarInt](/quest/m1/rs2ts/js-varint.md) - js/net has a 64-bit `VarInt` type with checked `number` conversion and no BigInt on the hot path
 - [rs2ts](/quest/m1/rs2ts/translator.md) - a Charon-based translator emits readable TypeScript for moq-net's lite codec, committed and checked for drift in CI
 - [Sans-IO moq-net](/quest/m1/rs2ts/sans-io/README.md) - moq-net builds and runs without a runtime; async helpers sit behind an `async` feature
 - [Generated lite](/quest/m1/rs2ts/lite.md) - @moq/net's lite session and model layer are generated from moq-net
