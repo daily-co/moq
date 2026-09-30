@@ -65,7 +65,8 @@ been offered and answered.
 - [Keep-alive by deadline](/quest/m2/quic-keep-alive.md),
   [Careful resume on reconnect](/quest/m2/quic-careful-resume.md),
   [L4S on the backbone](/quest/m2/quic-ecn.md),
-  [Discover media headroom](/quest/m2/quic-probe.md) - m2 features offered
+  [Discover media headroom](/quest/m2/quic-probe.md),
+  [Offset writes](/quest/m2/cut-through/noq.md) - m2 features offered
   upstream when they land
 - [BBR media study](/quest/m2/quic-bbr-natural-drain.md),
   [Receive timestamps](/quest/m3/quic-receive-ts.md), [GCC](/quest/m3/quic-gcc.md) -
