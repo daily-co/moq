@@ -112,6 +112,7 @@ pub struct MockSendStream {
 	/// Acknowledge the FIN as soon as it is sent, for a stream the peer's transport holds
 	/// back from its application (see [`MockSession::hold_unis`]).
 	ack_fin: bool,
+	withhold_fin: Arc<std::sync::atomic::AtomicBool>,
 	conn: Arc<ConnectionState>,
 }
 
@@ -141,11 +142,14 @@ impl poll::SendStream for MockSendStream {
 	fn set_priority(&mut self, _order: u8) {}
 
 	fn finish(&mut self) -> Result<(), Self::Error> {
+		if self.withhold_fin.load(std::sync::atomic::Ordering::Relaxed) {
+			return Ok(());
+		}
 		if self.tx.is_some() {
 			// A FIN that never left must not look acknowledged: poll_closed
 			// trusts this signal ahead of the connection error.
 			let pushed = self.push(StreamChunk::Fin);
-			if pushed.is_ok() && self.ack_fin {
+			if pushed.is_ok() && (self.ack_fin || *self.conn.ack_fins.lock().unwrap()) {
 				self.closed.set(Ok(()));
 			}
 			self.tx = None;
@@ -309,6 +313,7 @@ fn new_stream_pair(conn: &Arc<ConnectionState>) -> (MockSendStream, MockRecvStre
 		closed: closed.clone(),
 		park: kio::Park::default(),
 		ack_fin: false,
+		withhold_fin: Arc::default(),
 		conn: conn.clone(),
 	};
 	let recv = MockRecvStream {
@@ -332,6 +337,8 @@ fn new_stream_pair(conn: &Arc<ConnectionState>) -> (MockSendStream, MockRecvStre
 struct ConnectionState {
 	/// Set once by whichever side closes first.
 	close_state: Mutex<Option<(u32, String)>>,
+	/// Transport ACKs FIN without waiting for application reads.
+	ack_fins: Mutex<bool>,
 	/// Wakes both sides when close_state is populated.
 	waiters: kio::Fan,
 }
@@ -370,6 +377,7 @@ struct SessionSide {
 	withheld: Mutex<bool>,
 	/// Whether the datagrams this side sends are lost.
 	lossy: Mutex<bool>,
+	withhold_bidi_fins: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// An in-memory mock WebTransport session.
@@ -434,7 +442,8 @@ impl poll::Session for MockSession {
 		_cx: &mut Context<'_>,
 	) -> Poll<Result<(Self::SendStream, Self::RecvStream), Self::Error>> {
 		// Create two stream pairs: one for each direction.
-		let (our_send, peer_recv) = new_stream_pair(&self.side.conn);
+		let (mut our_send, peer_recv) = new_stream_pair(&self.side.conn);
+		our_send.withhold_fin = self.side.withhold_bidi_fins.clone();
 		let (peer_send, our_recv) = new_stream_pair(&self.side.conn);
 
 		// Deliver (peer_send, peer_recv) to the peer's accept_bi.
@@ -530,12 +539,19 @@ impl poll::Session for MockSession {
 // Only some test binaries steer delivery.
 #[allow(dead_code)]
 impl MockSession {
-	/// Hold back the uni streams this side opens from now on.
-	///
-	/// The peer's transport has them, so a FIN is acknowledged at once, but its application
-	/// does not see them until [`Self::release_unis`]. That is QUIC delivering streams out of
-	/// order: a publisher can see a group stream acknowledged and end the subscription
-	/// before the subscriber has read the group's header.
+	/// Withhold this side's completion FINs while keeping its bidi streams open.
+	pub fn withhold_bidi_fins(&self) {
+		self.side
+			.withhold_bidi_fins
+			.store(true, std::sync::atomic::Ordering::Relaxed);
+	}
+
+	/// ACK every FIN before the peer reads it, matching a real QUIC transport.
+	pub fn ack_fins(&self) {
+		*self.side.conn.ack_fins.lock().unwrap() = true;
+	}
+
+	/// Hold back uni streams while ACKing their FIN, until `release_unis` delivers them.
 	pub fn hold_unis(&self) {
 		self.side.held.lock().unwrap().get_or_insert_default();
 	}
@@ -619,6 +635,7 @@ pub fn create_mock_session_pair(protocol: Option<&'static str>) -> (MockSession,
 		held: Mutex::default(),
 		withheld: Mutex::default(),
 		lossy: Mutex::default(),
+		withhold_bidi_fins: Arc::default(),
 	});
 
 	let server_side = Arc::new(SessionSide {
@@ -633,6 +650,7 @@ pub fn create_mock_session_pair(protocol: Option<&'static str>) -> (MockSession,
 		held: Mutex::default(),
 		withheld: Mutex::default(),
 		lossy: Mutex::default(),
+		withhold_bidi_fins: Arc::default(),
 	});
 
 	let new = |side| MockSession {

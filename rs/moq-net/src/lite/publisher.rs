@@ -1246,7 +1246,12 @@ impl<S: crate::transport::poll::Session> SubscribeServe<S> {
 						stream.writer.finish()?;
 						*finished = true;
 					}
-					return stream.writer.poll_closed(&mut cx);
+					// A transport ACK does not say the application read the tail.
+					// Lite07 subscribers FIN only after their tail accounting settles.
+					if self.shared.version.waits_for_subscriber_fin() {
+						while ready!(stream.reader.poll_decode_maybe::<lite::SubscribeUpdate>(&mut cx))?.is_some() {}
+					}
+					return stream.writer.poll_close(&mut cx);
 				}
 			}
 		}
