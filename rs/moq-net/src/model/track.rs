@@ -4889,7 +4889,7 @@ mod test {
 	/// the wire codec and the model.
 	#[test]
 	fn datagram_wire_roundtrip_between_tracks() {
-		use crate::coding::{Decode, Encode};
+		use crate::coding::Encode;
 		use crate::lite;
 
 		let version = lite::Version::Lite05;
@@ -4911,8 +4911,7 @@ mod test {
 		.unwrap();
 
 		// Subscriber decodes the body and writes it downstream, preserving the sequence.
-		let mut slice = &body[..];
-		let wire = lite::Datagram::decode(&mut slice, version).unwrap();
+		let wire = lite::Datagram::decode(body, version).unwrap();
 		let mut downstream = track_producer("test", None);
 		let mut downstream_dg = downstream.subscribe(None);
 		downstream

@@ -29,15 +29,22 @@ Mapping decided in planning:
   `[Symbol.dispose]`; `Arc`/`Rc` of a type with drop glue become an explicit
   refcount. JS is single-threaded, so `Mutex` and atomics become plain
   access.
-- Rust `VarInt` maps to the [JS VarInt](/quest/m1/rs2ts/js-varint.md) type.
-  Integers up to 32 bits and `usize` map to `number` with checked arithmetic
-  that throws on overflow; never wrap silently. A `u64` or `i64` never maps
-  to a lossy `number`: the model accepts `u64::MAX` (e.g.
-  `model/subscription.rs`), so each one either becomes `VarInt` or an
-  `Option` in the source, or maps to a full-width 64-bit TypeScript type.
+- Rust `u64` maps to a TypeScript `U64` (two `u32` halves), generically; see
+  [JS U64](/quest/m1/rs2ts/js-varint.md). Integers up to 32 bits and `usize`
+  map to `number` with checked arithmetic that throws on overflow; never wrap
+  silently. A `u64` or `i64` never maps to a lossy `number`: the model accepts
+  `u64::MAX` (e.g. `model/subscription.rs`). Varint is a wire encoding in the
+  codec, not a type, so nothing maps by that name.
 
 Guidance:
 
+- Keep rs2ts a generic translator for a Rust subset, not a moq-net tool. It
+  maps by Rust type and construct (e.g. `u64` to one 64-bit TypeScript type),
+  never by moq-net names; anything project-specific lives in moq-net's source
+  or a small config, so another crate could use rs2ts unchanged.
+- `varint::zigzag` and `unzigzag` (lite per-frame timestamps) still use
+  64-bit bit math, which the subset forbids. Rewrite them on two `u32` halves,
+  or give the 64-bit TypeScript type the operations they need.
 - Pin Charon and its nightly in the nix shell for the regeneration lane only.
 - Borrow rust-js's MIT oxc printer for formatting and source maps.
 - Readability pass: inline single-use temporaries and keep source branch
@@ -55,5 +62,4 @@ translates. Wire: none.
 
 ## Required
 
-- [VarInt codec](/quest/m1/rs2ts/varint-codec.md) - the codec shape the translator targets
-- [JS VarInt](/quest/m1/rs2ts/js-varint.md) - the TypeScript type `VarInt` maps to
+- [JS U64](/quest/m1/rs2ts/js-varint.md) - the TypeScript `U64` that Rust `u64` maps to
