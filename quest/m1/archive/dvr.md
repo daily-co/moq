@@ -27,13 +27,33 @@ served stays in `moq_net`'s track cache until the pool reclaims it. Decide
 whether expiry during a seek needs a group eviction API in `moq-net`.
 
 `moq-hls` reads a timeline from the catalog's own broadcast, and an
-`archive.replay` path only marks it non-durable. Decide whether a live
-broadcast's exporter follows `replay` to the recording for rewind, or whether
-viewers address the replay broadcast directly.
+`archive.replay` path only marks it non-durable. Decided (09-29): the exporter
+does not follow `replay`, and viewers don't address a separate replay
+broadcast. A recording is the broadcast. Under the
+[wildcard](/quest/m0/wildcard/README.md) plan the archive serves the source
+path through the root claim, and a live announcement shadows it. So when live
+ends, `moq-hls` resolves the same name and falls through to the recording:
+playlists keep serving for rewind and for players finishing the last
+segments. The fall-through needs the recording to publish its catalog live,
+since `moq-hls` subscribes to it rather than FETCHing it. Decided (09-29):
+that republishing moves into `moq-archive`, so any host of the archive
+behind the root claim does it, not only `moq-cli`; update [Replay
+catalog](/quest/m1/archive/replay-catalog.md) to match.
+
+During live, rewind needs no handover: a recorded broadcast's live timeline
+is durable, and every group it lists is promised available, so a seek past
+the live window FETCHes old groups through the normal miss chain down to the
+archive. `moq-hls` needs no special path. `moq-hls` gains
+no linger (the `hls-linger` quest was dropped, because an unannounced
+broadcast can't be FETCHed and a linger would only serve the cache). Test
+the handover: a live HLS session keeps its playlist URIs and media sequence
+numbers when the name moves from the live publisher to the archive.
 
 ## Required
 
 - [Per-track timelines](/quest/m1/archive/track-timeline/README.md) - seeks through per-track timelines
+- [Replay catalog](/quest/m1/archive/replay-catalog.md) - the recording publishes its catalog live, so `moq-hls` finds it after the handover
+- [Wildcard](/quest/m0/wildcard/README.md) - the archive's root claim serves the source path once the live announcement ends
 
 ## Closes
 
