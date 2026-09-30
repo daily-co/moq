@@ -26,8 +26,9 @@ Independent of the bench; it can start any time.
   `RecvStream` gains an accessor returning `Option` (`None` when the backend
   cannot see it), following the trait's `Stats` convention. Release both, as
   [poll_acked in web-transport](/quest/m2/quic-ack-hook.md) does.
-- The lite and IETF subscribers read the count when a group stream ends and add
-  it to the broadcast's ingress row. Nothing on the per-byte path.
+- The lite and IETF subscribers read the count at each frame boundary and when
+  the group stream ends, adding the delta to the broadcast's ingress row, so a
+  long group does not leave the row stale. Nothing on the per-byte path.
 - Update the stats section of `doc/bin/relay/config.md`.
 
 Test: a seeded loss on a noq pair counts the held bytes; a reorder shorter than

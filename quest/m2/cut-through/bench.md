@@ -25,9 +25,13 @@ partly measure its own assumptions.
   cut-through removes. No direct publisher-to-viewer control: the gain exists
   only with a relay in the middle, and one QUIC hop already reassembles out of
   order, so a direct run measures a different topology (review of #4616).
-- Split the held bytes into the frame that has the hole and later frames, so
-  the verdict shows what [multiple in-flight frames](/quest/m2/cut-through/frames.md)
-  add beyond the current frame.
+- Split the held bytes three ways: bytes in the frame that has the hole, bytes
+  in later frames whose headers were known while the hole was open, and bytes
+  behind a lost header. Only the first two are forwardable; the last blocks with
+  or without cut-through and is reported but excluded from the opportunity. The
+  first split shows what [multiple in-flight frames](/quest/m2/cut-through/frames.md)
+  add beyond the current frame. Report the drain estimate as an upper bound, and
+  include both a payload-loss and a header-loss case to validate the split.
 - Take publisher and subscriber counts as parameters, so
   [relay cut-through](/quest/m2/cut-through/relay.md) reuses the rig for its
   fan-out sweep.

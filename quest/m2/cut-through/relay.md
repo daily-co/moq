@@ -14,6 +14,10 @@ Decided 2026-09-30: always on when the ingress and egress streams both support
 it, no config knob; otherwise today's ordered path.
 
 - Ingest: read the stream header in order, then switch to unordered reads.
+  `Reader` may already hold bytes past the header in its buffer, so hand that
+  suffix over with its absolute stream offset rather than dropping or
+  re-basing it; test a transport chunk that carries both the header and the
+  first payload bytes.
   Frame headers are parsed from the contiguous prefix; once a header is known,
   its frame's payload ranges go into the frame with the
   [offset write](/quest/m2/cut-through/frames.md) wherever they land. A hole
@@ -41,9 +45,10 @@ regression test asserts N+1 is forwarded before N's hole fills when the
 multi-frame scope ships.
 
 Sweep the bench over publisher and subscriber counts as well as the network
-axes: range bookkeeping, wakeups, and offset writes run per egress subscriber,
-so relay CPU for cut-through against the ordered path must be flat in the
-table size. Re-run it and record the result in the line's README.
+axes. Range bookkeeping, wakeups, and offset writes run per served
+subscriber, so total CPU grows with the subscribers a range reaches; the cost
+per served subscriber, and the cost from table entries a range does not touch,
+must stay flat against the ordered path. Re-run it and record the result in the line's README.
 
 ## Required
 
