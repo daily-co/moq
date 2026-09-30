@@ -29,7 +29,11 @@ Decided 2026-09-30:
   the next header's input position and every output header's length depend on
   earlier header values (lite's timestamp delta, IETF's object id delta). A hole
   inside a payload blocks nothing, since the frame sizes locate both the input
-  and the output bytes.
+  and the output bytes. Passing a hole into later frames needs several
+  in-flight frames per group; the relay quest prototypes both scopes and keeps
+  the one the bench justifies.
+- The opportunity is measured on the real two-hop path, not against a direct
+  connection: the gain exists only with a relay in the middle.
 - The frame model gains an offset write and a range read, crate-private in
   `moq-net`, since the lite and IETF publishers and subscribers that use them
   live in the same crate. Cut-through frames keep the received chunks by
@@ -56,9 +60,9 @@ stats field, which its quest documents inline.
 ## Required
 
 - [Loss delay](/quest/m2/cut-through/loss-delay.md) - relays report, per broadcast, the ingress bytes a loss held back by at least one RTT
-- [Bench](/quest/m2/cut-through/bench.md) - a lossy relay hop swept over loss, frame size, and egress headroom, against a direct-connection bound, with a go or no-go verdict
+- [Bench](/quest/m2/cut-through/bench.md) - a lossy relay hop swept over loss, frame size, and egress headroom, measuring the post-hole drain time, with a go or no-go verdict
 - [Offset writes in noq](/quest/m2/cut-through/noq.md) - the fork's send streams accept writes past a gap and send them right away
-- [Frame ranges](/quest/m2/cut-through/frames.md) - a frame fills out of order and a reader sees each range as it lands
+- [Frame ranges](/quest/m2/cut-through/frames.md) - frames fill out of order, several at once per group, and a reader sees each range as it lands
 - [Transport trait](/quest/m2/cut-through/transport.md) - `web-transport-trait` carries unordered reads and offset writes, implemented for noq
 - [Relay cut-through](/quest/m2/cut-through/relay.md) - lite and IETF group streams read out of order and write each range at its output offset
 

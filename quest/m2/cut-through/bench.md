@@ -19,9 +19,18 @@ partly measure its own assumptions.
 - Sweep loss rate, frame size (audio-sized through a large I-frame), and egress
   headroom (egress rate relative to the media rate).
 - Report per-frame completion at the viewer, from publish to last byte, p50 and
-  p99. The bound is the same path with the relay replaced by a direct
-  publisher-to-viewer connection over the same shaper: roughly what perfect
-  cut-through approaches. The gap between relay and direct is the opportunity.
+  p99. The opportunity is the drain time on this same two-hop path: per frame,
+  the time from the relay's ingress hole filling to the frame completing at the
+  viewer, minus the same for frames with no hole. That excess is the burst
+  cut-through removes. No direct publisher-to-viewer control: the gain exists
+  only with a relay in the middle, and one QUIC hop already reassembles out of
+  order, so a direct run measures a different topology (review of #4616).
+- Split the held bytes into the frame that has the hole and later frames, so
+  the verdict shows what [multiple in-flight frames](/quest/m2/cut-through/frames.md)
+  add beyond the current frame.
+- Take publisher and subscriber counts as parameters, so
+  [relay cut-through](/quest/m2/cut-through/relay.md) reuses the rig for its
+  fan-out sweep.
 - Record the loss-delay counter from the same runs, if
   [Loss delay](/quest/m2/cut-through/loss-delay.md) has landed, so production
   numbers can be read against the lab.

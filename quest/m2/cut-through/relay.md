@@ -34,7 +34,16 @@ it, no config knob; otherwise today's ordered path.
   version receives byte-identical streams to the ordered path, and a
   header-covering hole holds later frames.
 
-Re-run the bench and record the result in the line's README.
+Prototype both scopes on the bench: cut-through within the current frame only,
+and across in-flight frames, where N+1's payload passes N's hole once N's
+header is parsed. Keep the one the numbers justify and delete the other; a
+regression test asserts N+1 is forwarded before N's hole fills when the
+multi-frame scope ships.
+
+Sweep the bench over publisher and subscriber counts as well as the network
+axes: range bookkeeping, wakeups, and offset writes run per egress subscriber,
+so relay CPU for cut-through against the ordered path must be flat in the
+table size. Re-run it and record the result in the line's README.
 
 ## Required
 

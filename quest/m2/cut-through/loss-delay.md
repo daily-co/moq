@@ -20,6 +20,8 @@ Independent of the bench; it can start any time.
   bytes held at least one smoothed RTT are counted. Plain reordering fills
   within an RTT and is not counted. The count is by arrival and gap fill, not by
   when the application reads, so it stays meaningful once reads go unordered.
+  When a stream ends with a hole still open (reset, stop, or session close),
+  buffered bytes that have already waited one smoothed RTT are counted then.
 - The fork exposes the per-stream count, and `web-transport-trait`'s
   `RecvStream` gains an accessor returning `Option` (`None` when the backend
   cannot see it), following the trait's `Stats` convention. Release both, as
