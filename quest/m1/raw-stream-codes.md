@@ -9,30 +9,26 @@ on stream errors. WebTransport sessions keep the mapping they need.
 
 ## Plan
 
-- `web-transport-moq` (moq-dev/noq) runs every stream code through
-  `web_transport_proto::error_to_http3` and `error_from_http3` in `send.rs`
-  and `recv.rs`, whether or not the session came from `Session::raw`.
-  `web-transport-iroh` and `web-transport-quinn` (moq-dev/web-transport) do
-  the same. A raw peer's code 5 reads as `None` or another value, and ours
-  reaches it as a large HTTP/3 code.
-- #4262 fixed the same mix-up for `ApplicationClosed` on `dev`, on
-  web-transport-trait 0.5, so this follows it there. Let each stream know whether its
-  session is raw and skip the mapping there, in all three adapters, with a
-  round-trip test per adapter against a plain QUIC peer.
-- Release the fixed crates and bump the pins here in the same quest; published
-  crates depend on crates.io releases, never a patch. A moq-tokio test over
-  `moqt://` asserts a reset code arrives verbatim, beside `close_code.rs`.
-- Mixed versions: two moq peers on raw QUIC agree today because both map, and
-  wire changes must stay compatible with published versions. An older peer
-  still sends `error_to_http3(code)`, so a fixed peer that only skips the
-  mapping reports the large HTTP/3 value, not the code. The legacy form is
-  detectable, since it lands in the HTTP/3 WebTransport range that no moq
-  code reaches (`error_from_http3` returns `None` outside it), so the raw
-  receive path unmaps a code in that range and passes the rest through, with
-  a legacy-sender test per adapter. The other direction has no fix at the
-  receiver: an older peer misreads a fixed peer's raw codes. Check which codes
-  moq-net acts on (group stream resets, subscribe STOP_SENDING): if any drives
-  behaviour beyond reporting, this is a wire break and retargets to `dev`.
+- The adapter fixes are up as moq-dev/noq#27 (`web-transport-moq`) and
+  moq-dev/web-transport#408 (`web-transport-iroh`, `web-transport-quinn`).
+  Raw sessions send codes as-is, read a plain code as-is, and still unmap a
+  code in the HTTP/3 WebTransport range, which only an older raw peer sends.
+  `moq-uring` already sent raw codes; it now unmaps that legacy range too.
+- Remaining: release both adapters, bump the lock here (the `2.0` and `0.8`
+  requirements already admit the patch releases), and the moq-tokio
+  `stream_code.rs` test, which asserts a refused stream's code arrives
+  verbatim over raw QUIC, goes green.
+- Mixed versions: this is a wire break, so it stays on `dev`. An older peer
+  reads a fixed peer's plain codes as invalid, which moq-net reports as
+  `Error::Transport`. On moq-lite that costs only the stream: a cancel reads
+  as a failure, a relay forwards INTERNAL_ERROR instead of the peer's code,
+  and a relay HTTP fetch answers 500 instead of 404. On moq-transport, a
+  release without #4602 ends the whole session when a stream is reset before
+  its header, which a fixed peer does routinely. Release #4602 on `main`
+  before any adapter release that sends raw codes.
+- A `main`-compatible subset (read raw and legacy codes, keep sending mapped
+  ones) could ship on `web-transport-moq` 1.3.x and `web-transport-iroh`
+  0.7.x without breaking anyone, if interop needs it before `dev` releases.
 
-Public API: none expected. Wire: raw QUIC stream error codes become the
-application's own values; compatible only if older peers merely report them.
+Public API: none. Wire: raw QUIC stream error codes become the application's
+own values.
