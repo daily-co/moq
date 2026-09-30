@@ -1,4 +1,4 @@
-# Wildcard advertisements
+# [S] Wildcard advertisements
 
 ## Goal
 
@@ -188,11 +188,6 @@ served from storage through the root claim, and a live publisher's concrete
 announcement shadows it. A claim names no generation, so a client that must
 distinguish recording generations reads the catalog's archive entry
 ([archive](/quest/m1/archive/README.md)) rather than announce state.
-
-## Required
-
-- [Datagrams behind SUBSCRIBE_START](/quest/m0/wildcard/datagram-start.md) - no datagram crosses a subscription's start in either direction, in Rust or JS
-- [JS origin granularity](/quest/m0/wildcard/js-origin.md) - `@moq/net` tracks a reply's origin at the same granularity as Rust
 
 ## Related
 
