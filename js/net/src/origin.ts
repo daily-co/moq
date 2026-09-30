@@ -747,6 +747,7 @@ export class Producer implements Table {
 		if (!created) throw new Error("origin is closed");
 
 		const producer = new broadcast.Producer();
+		hooks.stampPath(producer, path);
 		const front = producer.consume();
 
 		hooks.attachAnnouncer(producer, {
@@ -1292,6 +1293,7 @@ export class Consumer {
 				const previous = handle;
 				source = front;
 				handle = front?.clone();
+				if (handle) hooks.stampPath(handle, relative);
 				previous?.close();
 			}
 			return handle;
