@@ -22,11 +22,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use futures::{
-	FutureExt,
-	executor::{LocalPool, LocalSpawner},
-	task::LocalSpawnExt,
-};
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 
 pub use moq_net_sim_macros::test;
 
@@ -38,8 +34,11 @@ thread_local! {
 /// instant whenever time moves, it returns its earliest deadline still pending.
 type Source = Box<dyn FnMut(Instant) -> Option<Instant>>;
 
+type Task = Pin<Box<dyn Future<Output = ()>>>;
+
 struct Runtime {
-	spawner: LocalSpawner,
+	/// Spawned since the run loop last collected them.
+	spawned: RefCell<Vec<Task>>,
 	time: RefCell<Time>,
 	sources: RefCell<Vec<Source>>,
 }
@@ -111,7 +110,7 @@ pub fn is_running() -> bool {
 	CURRENT.with(|current| current.borrow().is_some())
 }
 
-/// Wakes the root future by raising a flag the run loop checks.
+/// Raises a flag the run loop checks, for the root future and the spawned tasks.
 struct Flag(AtomicBool);
 
 impl Wake for Flag {
@@ -138,9 +137,8 @@ impl Drop for Enter {
 /// When called inside another `run`, and when every task is parked with no timer
 /// armed, which is a deadlock.
 pub fn run<F: IntoFuture>(future: F) -> F::Output {
-	let mut pool = LocalPool::new();
 	let runtime = Rc::new(Runtime {
-		spawner: pool.spawner(),
+		spawned: RefCell::new(Vec::new()),
 		time: RefCell::new(Time {
 			now: Instant::now(),
 			next: 0,
@@ -156,17 +154,27 @@ pub fn run<F: IntoFuture>(future: F) -> F::Output {
 	let enter = Enter;
 
 	let mut future = pin!(future.into_future());
-	let flag = Arc::new(Flag(AtomicBool::new(true)));
-	let waker = Waker::from(flag.clone());
-	let mut cx = Context::from_waker(&waker);
+	let root = Arc::new(Flag(AtomicBool::new(true)));
+	let root_waker = Waker::from(root.clone());
+	let mut root_cx = Context::from_waker(&root_waker);
+
+	let mut tasks = FuturesUnordered::new();
+	let pool = Arc::new(Flag(AtomicBool::new(false)));
+	let pool_waker = Waker::from(pool.clone());
+	let mut pool_cx = Context::from_waker(&pool_waker);
+
+	// The root and the spawned tasks take turns, so a task that keeps waking
+	// itself cannot starve the root: `FuturesUnordered` yields after one pass.
 	let output = loop {
-		if flag.0.swap(false, Ordering::SeqCst)
-			&& let Poll::Ready(output) = future.as_mut().poll(&mut cx)
+		if root.0.swap(false, Ordering::SeqCst)
+			&& let Poll::Ready(output) = future.as_mut().poll(&mut root_cx)
 		{
 			break output;
 		}
-		pool.run_until_stalled();
-		if flag.0.load(Ordering::SeqCst) {
+		tasks.extend(runtime.spawned.take());
+		pool.0.store(false, Ordering::SeqCst);
+		while let Poll::Ready(Some(())) = tasks.poll_next_unpin(&mut pool_cx) {}
+		if root.0.load(Ordering::SeqCst) || pool.0.load(Ordering::SeqCst) || !runtime.spawned.borrow().is_empty() {
 			continue;
 		}
 		assert!(
@@ -175,7 +183,8 @@ pub fn run<F: IntoFuture>(future: F) -> F::Output {
 		);
 	};
 
-	drop(pool);
+	drop(tasks);
+	drop(runtime.spawned.take());
 	drop(enter);
 	// Sources and timers may hold wakers into the dropped tasks.
 	runtime.sources.borrow_mut().clear();
@@ -423,7 +432,17 @@ impl<T> Future for JoinHandle<T> {
 
 impl<T> Drop for JoinHandle<T> {
 	fn drop(&mut self) {
-		self.join.borrow_mut().detached = true;
+		let output = {
+			let mut join = self.join.borrow_mut();
+			join.detached = true;
+			join.output.take()
+		};
+		// A task that already panicked won't finish again to report it.
+		if let Some(Err(JoinError(Some(panic)))) = output
+			&& !std::thread::panicking()
+		{
+			std::panic::resume_unwind(panic);
+		}
 	}
 }
 
@@ -481,12 +500,14 @@ where
 		finish(output.map_err(|panic| JoinError(Some(panic))));
 		Poll::Ready(())
 	});
-	current().spawner.spawn_local(task).expect("the executor has shut down");
+	current().spawned.borrow_mut().push(Box::pin(task));
 	JoinHandle { join }
 }
 
 #[cfg(test)]
 mod tests {
+	use std::cell::Cell;
+
 	use super::{
 		Duration, Elapsed, Poll, Rc, RefCell, Waker, advance, attach, drive, now, run, sleep, spawn, timeout, yield_now,
 	};
@@ -558,6 +579,35 @@ mod tests {
 		run(async {
 			drop(spawn(async { panic!("boom") }));
 			yield_now().await;
+		});
+	}
+
+	#[test]
+	#[should_panic(expected = "boom")]
+	fn dropping_the_handle_of_a_panicked_task_fails_the_run() {
+		run(async {
+			let task = spawn(async { panic!("boom") });
+			yield_now().await;
+			assert!(task.is_finished());
+			drop(task);
+		});
+	}
+
+	#[test]
+	fn a_self_waking_task_cannot_starve_the_root() {
+		run(async {
+			let done = Rc::new(Cell::new(false));
+			let task = spawn({
+				let done = done.clone();
+				async move {
+					while !done.get() {
+						yield_now().await;
+					}
+				}
+			});
+			yield_now().await;
+			done.set(true);
+			task.await.unwrap();
 		});
 	}
 
