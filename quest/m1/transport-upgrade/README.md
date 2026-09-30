@@ -34,8 +34,8 @@ forbidden to a moq-transport client). The origin's multi-route front prefers
 the newest of two equal routes and `resume` splices each track at a group
 boundary, capping the old segment so the old session's subscription ends at the
 boundary on its own. The JavaScript handover is the
-[client goaway](/quest/m1/drain/client-goaway.md) quest's, so the JS half
-requires it.
+[drain](/quest/m1/drain/README.md) line's (client goaway, done there), so the
+JS half requires it.
 
 Shared decisions:
 
@@ -45,7 +45,7 @@ Shared decisions:
   `moq-tokio`, `websocketWon` in `js/net`) forgets the URL: QUIC works on this
   network, so the head start comes back. Otherwise a network where WebSocket
   narrowly beats QUIC would open two connections on every reconnect.
-- The old session gets `Goaway::same()` with the configured handover cap before
+- The old session gets `Goaway::new()` with the configured handover cap before
   it enters draining. The relay refuses new requests on it from then on; the
   splice ends its subscriptions at the boundary.
 - One-shot `connect()` returns one session and never upgrades; every
@@ -55,7 +55,7 @@ Shared decisions:
   per-session origin makes that a replacement rather than a join, which is
   immediate either way.
 
-## Quests
+## Required
 
 - [Rust](/quest/m1/transport-upgrade/rust.md) - moq-tokio keeps the QUIC dial after WebSocket wins and migrates through the existing Draining path
 - [JavaScript](/quest/m1/transport-upgrade/js.md) - js/net keeps the WebTransport dial after WebSocket wins and migrates through the client-goaway handover

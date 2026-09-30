@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type * as Catalog from "@moq/hang/catalog";
+import * as Catalog from "@moq/hang/catalog";
 import * as Moq from "@moq/net";
 import { Origin, Path } from "@moq/net";
 import { Effect, Signal } from "@moq/signals";
@@ -110,75 +110,46 @@ describe("relativeBroadcast", () => {
 	const manual = (renditions: Record<string, Catalog.VideoConfig>) =>
 		manualCatalog({ video: { renditions } } as Catalog.Root);
 
-	it("rejects a catalog carrying an escaping rendition", async () => {
-		// The whole catalog goes, not just the offending rendition: the root is this
-		// consumer's authorized subtree, so the reference names content it cannot reach,
-		// and serving the rest would hide a publisher bug behind a track that never fills.
-		const { source, owner } = manual({
-			good: rendition(),
-			sibling: rendition("./source"),
-			bad: rendition("../../x"),
-		});
-
+	// The error a manual catalog was rejected with, after checking nothing was published.
+	const rejection = async (catalog: Catalog.Root): Promise<unknown> => {
+		const { source, owner } = manualCatalog(catalog);
 		const error = console.error;
-		console.error = () => {};
+		let logged: unknown;
+		console.error = (...args: unknown[]) => {
+			logged = args.at(-1);
+		};
 		try {
 			// The catalog is validated by an effect, which settles a microtask later.
 			await Promise.resolve();
 			expect(source.out.catalog.peek()).toBeUndefined();
+			return logged;
 		} finally {
 			console.error = error;
 			source.close();
 			owner.close();
 		}
+	};
+
+	it("rejects a catalog carrying an escaping rendition", async () => {
+		// The whole catalog goes, not just the offending rendition: the root is this
+		// consumer's authorized subtree, so the reference names content it cannot reach,
+		// and serving the rest would hide a publisher bug behind a track that never fills.
+		const catalog = {
+			video: { renditions: { good: rendition(), sibling: rendition("./source"), bad: rendition("../../x") } },
+		} as Catalog.Root;
+		expect(await rejection(catalog)).toBeInstanceOf(Catalog.EscapingBroadcast);
 	});
 
-	it("rejects a catalog whose json or binary track escapes the root", async () => {
-		// Data tracks carry the same `broadcast` reference as renditions. Rust rejects an
-		// escaping one; leaving the section out of the check would let it through.
-		const track = { mode: "snapshot", broadcast: Path.normalizeRelative("../../x") };
-		for (const section of ["json", "binary"] as const) {
-			const { source, owner } = manualCatalog({
+	it("rejects a catalog whose text or data track escapes the root", async () => {
+		// The shared hang check runs here too, so every section it covers rejects the catalog.
+		const broadcast = Path.normalizeRelative("../../x");
+		for (const section of ["text", "json", "binary"] as const) {
+			const key = section === "text" ? "renditions" : "tracks";
+			const catalog = {
 				video: { renditions: { good: rendition() } },
-				[section]: { tracks: { status: track } },
-			} as Catalog.Root);
-
-			const error = console.error;
-			console.error = () => {};
-			try {
-				await Promise.resolve();
-				expect(source.out.catalog.peek()).toBeUndefined();
-			} finally {
-				console.error = error;
-				source.close();
-				owner.close();
-			}
-		}
-	});
-
-	it("rejects a catalog whose text rendition escapes the root", async () => {
-		// The containment check covers every section carrying renditions: a text (caption)
-		// reference escaping the root rejects the catalog like a video or audio one.
-		const captions = {
-			format: "vtt",
-			role: "subtitle",
-			container: { kind: "legacy" },
-			broadcast: "../../x",
-		} as Catalog.TextConfig;
-		const { source, owner } = manualCatalog({
-			video: { renditions: { good: rendition() } },
-			text: { renditions: { captions } },
-		} as Catalog.Root);
-
-		const error = console.error;
-		console.error = () => {};
-		try {
-			await Promise.resolve();
-			expect(source.out.catalog.peek()).toBeUndefined();
-		} finally {
-			console.error = error;
-			source.close();
-			owner.close();
+				[section]: { [key]: { entry: { broadcast } } },
+			} as Catalog.Root;
+			expect(await rejection(catalog)).toBeInstanceOf(Catalog.EscapingBroadcast);
 		}
 	});
 
@@ -346,11 +317,12 @@ describe("cross-broadcast renditions", () => {
 // A derived rendition produced only on demand by a service that claims a covering prefix (a
 // wildcard) instead of announcing each path. Nothing announces the rendition until something
 // subscribes to it, so the player must list it from the claim alone. The rendition is a sibling:
-// one beneath its source is already covered by the source's own announcement.
+// one beneath its source is already covered by the source's own announcement. The service prefix
+// is hidden, as a deployment keeps it out of listings, so the claim is only seen by opting in.
 describe("wildcard renditions", () => {
 	const name = Path.from("live/foo.hang");
-	const derived = Path.from("transcode/foo.hang");
-	const rel = Path.normalizeRelative("../transcode/foo.hang");
+	const derived = Path.from(".pro/transcode/foo.hang");
+	const rel = Path.normalizeRelative("../.pro/transcode/foo.hang");
 
 	const watch = (owner: Origin.Producer) =>
 		new Broadcast({
@@ -378,7 +350,7 @@ describe("wildcard renditions", () => {
 			await settle();
 			expect(videoRenditions(source)).toEqual(["source"]);
 
-			const worker = owner.dynamic(Path.from("transcode"));
+			const worker = owner.dynamic(Path.from(".pro/transcode"));
 			const requests = worker.requested();
 			await settle();
 			expect(videoRenditions(source)).toEqual(["source", "transcode"]);
@@ -426,7 +398,7 @@ describe("wildcard renditions", () => {
 		try {
 			// A catch-all (an archive) and a narrower pool both cover the derived path.
 			const archive = owner.dynamic(Path.empty());
-			const worker = owner.dynamic(Path.from("transcode"));
+			const worker = owner.dynamic(Path.from(".pro/transcode"));
 			await settle();
 			expect(videoRenditions(source)).toEqual(["source", "transcode"]);
 

@@ -106,6 +106,9 @@ pub struct MoqAnnounceConsumer {
 #[derive(uniffi::Object)]
 /// A served route: advertises a path prefix and yields the broadcast requests
 /// beneath it for the application to accept or reject.
+///
+/// Keeps its origin running, like a published broadcast, after every
+/// `MoqOriginProducer` is gone.
 pub struct MoqOriginDynamic {
 	slot: Slot,
 	task: std::sync::Mutex<Option<Arc<Task<OriginDynamic>>>>,
@@ -504,7 +507,7 @@ impl MoqAnnounceUpdate {
 impl MoqAnnouncedBroadcast {
 	/// Wait until the broadcast is announced. Returns `Closed` if cancelled or the origin is closed.
 	///
-	/// Use `broadcast.closed()` to learn when the broadcast ends.
+	/// Its end arrives as an inactive [`MoqAnnounceUpdate`] on the origin's announcements.
 	pub async fn available(&self) -> Result<Arc<MoqBroadcastConsumer>, MoqError> {
 		self.task.run(|mut state| async move { state.available().await }).await
 	}

@@ -230,6 +230,10 @@ where
 {
 	pub(crate) fn poll(&mut self, waiter: &kio::Waiter) -> Poll<Result<(), Error>> {
 		let res = std::task::ready!(self.poll_protocol(waiter));
+		if let Err(err) = &res {
+			// Every track this session was receiving ends with its error.
+			self.subscriber.abort(err);
+		}
 		match &res {
 			Err(Error::Transport(_)) => {
 				tracing::info!("session terminated");
@@ -246,6 +250,11 @@ where
 			}
 		}
 		Poll::Ready(res)
+	}
+
+	/// Whether no stream still owes the peer data, for a draining close.
+	pub(crate) fn drained(&self) -> bool {
+		self.publisher.drained()
 	}
 
 	fn poll_protocol(&mut self, waiter: &kio::Waiter) -> Poll<Result<(), Error>> {

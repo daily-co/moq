@@ -122,12 +122,19 @@ def test_protocol_error_helper_covers_known_app_and_unknown():
     assert moq.protocol_error(RuntimeError("nope")) is None
 
 
+def test_error_str_is_rust_display():
+    assert str(moq.Error.Closed()) == "closed"  # type: ignore[attr-defined]
+    assert str(moq.Error.Transport("reset")) == "transport: reset"  # type: ignore[attr-defined]
+    details = moq.ProtocolError(scope=moq.ErrorScope.STREAM, code=468, kind=moq.ProtocolKind.APP, message="gone")
+    assert str(moq.Error.Protocol(details)) == "gone"  # type: ignore[attr-defined]
+
+
 def test_publish_media_lifecycle():
     broadcast = moq.BroadcastProducer()
     media = broadcast.publish_audio(moq.AudioFormat.OPUS, opus_head())
     media.write_frame(b"opus frame", 1000)
     media.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 def test_publish_media_cut_and_seek():
@@ -146,9 +153,11 @@ def test_publish_media_cut_and_seek():
     # The same boundary, with the next group explicitly numbered.
     media.write_frame(b"opus frame", 60_000)
     media.seek(42)
+    media.discontinuity()
+    media.write_frame(b"resumed opus frame", 100_000)
 
     media.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 def test_video_properties_use_defaulted_fields():
@@ -157,7 +166,7 @@ def test_video_properties_use_defaulted_fields():
     assert properties.display is None
     assert properties.flip is None
     broadcast.set_video_properties(properties)
-    broadcast.finish()
+    broadcast.close()
 
 
 def test_audio_rejects_bad_init_bytes():
@@ -303,12 +312,19 @@ async def test_catalog_update_on_new_track():
         break
 
 
-def test_finish_closes_producer():
+def test_close_twice_is_a_noop():
     broadcast = moq.BroadcastProducer()
     _media = broadcast.publish_audio(moq.AudioFormat.OPUS, opus_head())
-    broadcast.finish()
+    broadcast.close()
+    broadcast.close()
 
     with pytest.raises(Exception):
+        broadcast.publish_audio(moq.AudioFormat.OPUS, opus_head())
+
+
+def test_finish_is_deprecated():
+    broadcast = moq.BroadcastProducer()
+    with pytest.deprecated_call():
         broadcast.finish()
 
 
@@ -330,7 +346,7 @@ def test_publish_lifecycle():
     track = broadcast.publish_track("status")
     track.write_frame(b'{"cmd": "ready"}', 0)
     track.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 async def test_publish_track_info_and_subscription():
@@ -520,7 +536,7 @@ async def test_dynamic_broadcast_request():
     assert frame.payload == payload
     assert frame.timestamp_us == 20_000
     track.finish()
-    served.finish()
+    served.close()
 
 
 async def test_dynamic_broadcast_request_can_reject():
@@ -1075,7 +1091,7 @@ def test_encode_audio_with_opus_object():
         producer.write(moq.AudioFrame(timestamp_us=0, data=bytes(960 * 4)))
         assert producer.name == "mic"
         producer.finish()
-        broadcast.finish()
+        broadcast.close()
 
 
 async def test_decode_video_format():
@@ -1129,7 +1145,7 @@ async def test_decode_video_format():
     i420.cancel()
     packed.cancel()
     video.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 async def test_broadcast_is_reachable_only_while_announced():
@@ -1159,7 +1175,7 @@ async def test_broadcast_is_reachable_only_while_announced():
     await asyncio.wait_for(consumer.request_broadcast("live"), timeout=5.0)
     announced.cancel()
     track.finish()
-    broadcast.finish()
+    broadcast.close()
 
 
 async def test_announced_pattern_captures():
@@ -1180,8 +1196,8 @@ async def test_announced_pattern_captures():
 
     announced.cancel()
     dynamic.cancel()
-    audio.finish()
-    chat.finish()
+    audio.close()
+    chat.close()
 
 
 async def test_dynamic_serves_a_request_under_a_prefix():
@@ -1196,7 +1212,7 @@ async def test_dynamic_serves_a_request_under_a_prefix():
     request.accept(served)
     await asyncio.wait_for(pending, timeout=5.0)
     dynamic.cancel()
-    served.finish()
+    served.close()
 
 
 async def test_dynamic_and_json_handles_are_async_context_managers():
@@ -1235,4 +1251,4 @@ async def test_dynamic_and_json_handles_are_async_context_managers():
     snapshot.finish()
     stream.finish()
     track.finish()
-    broadcast.finish()
+    broadcast.close()

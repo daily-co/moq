@@ -187,7 +187,7 @@ where
 			previous_timestamp: None,
 			cadence: None,
 			reordered: false,
-			estimator: crate::catalog::Estimator::new(),
+			estimator: rendition.estimator(),
 			bandwidth: None,
 			rendition: Some(Box::new(rendition)),
 		}
@@ -202,7 +202,7 @@ where
 	///
 	/// Estimate fields the config left to detection at [`set`](Self::set) stay owned by detection:
 	/// an edit to them here is published but replaced by the next measurement, except that jitter
-	/// never drops below the published value. Call `set` with the field filled in to pin it.
+	/// and delay never drop below the published value. Call `set` with the field filled in to pin it.
 	pub fn modify(&mut self) -> crate::Result<Guard<'_, R>> {
 		let rendition = self.rendition.as_mut().ok_or(crate::Error::NotPublished)?;
 		let config = rendition.config()?;
@@ -794,7 +794,7 @@ mod tests {
 	}
 
 	#[test]
-	fn catalog_flush_measures_each_rendition_against_its_own_minimum() {
+	fn catalog_flush_measures_delay_across_renditions_and_jitter_within_each() {
 		let mut broadcast = moq_net::broadcast::Info::new().produce();
 		let catalog = crate::catalog::Producer::new(&mut broadcast, crate::catalog::Config::default()).unwrap();
 		let mut tracks = Vec::new();
@@ -814,9 +814,11 @@ mod tests {
 		let ms = std::time::Duration::from_millis;
 		let pts = |millis: u64| Timestamp::from_micros(millis * 1_000).unwrap();
 		tracks[0].flush(pts(0), anchor).unwrap();
-		// A constant 200ms offset behind the other rendition is not jitter.
+		// A constant 200ms offset behind the other rendition is delay, not jitter.
 		tracks[1].flush(pts(0), anchor + ms(200)).unwrap();
 		assert_eq!(catalog.snapshot().video.renditions["slow"].jitter, None);
+		assert_eq!(catalog.snapshot().video.renditions["slow"].delay, Some(ms(200)));
+		assert_eq!(catalog.snapshot().video.renditions["fast"].delay, None);
 
 		// A frame flushed 60ms later than the slow rendition's own minimum is.
 		tracks[1].flush(pts(40), anchor + ms(300)).unwrap();
@@ -1158,29 +1160,80 @@ mod tests {
 		assert_eq!(collect_payloads(consumer).await, vec![vec![(0, 2), (20_000, 2)]]);
 	}
 
-	/// LOC producers do not write the marker until skipping consumers have shipped.
+	/// Drain all LOC groups, returning each group's (timestamp_micros, payload_len) pairs.
+	async fn collect_loc_payloads(mut consumer: moq_net::track::Subscriber) -> Vec<Vec<(u64, usize)>> {
+		let mut groups = Vec::new();
+		while let Some(mut group) = consumer.recv_group().await.unwrap() {
+			let mut frames = Vec::new();
+			while let Some(frame) = group.read_frame().await.unwrap() {
+				let decoded = moq_loc::decode(frame.payload).unwrap();
+				frames.push((decoded.timestamp, decoded.payload.len()));
+			}
+			groups.push(frames);
+		}
+		groups
+	}
+
+	/// A LOC video group ends with an empty frame at the next keyframe's timestamp, like Legacy.
 	#[tokio::test]
-	async fn loc_cut_writes_no_duration_marker() {
+	async fn loc_cut_writes_a_duration_marker_at_the_callers_bound() {
 		let track = track_producer("test", hang::container::track_info(hang::catalog::PRIORITY.video));
 		let consumer = track.subscribe(replay());
 		let mut producer = Producer::new(track, Container::Loc(crate::container::Kind::Video));
 
 		producer.write(frame(0, true)).unwrap();
+		producer.write(frame(10_000, false)).unwrap();
 		producer
-			.cut(Some(moq_net::Timestamp::from_micros(33_000).unwrap()))
+			.cut(Some(moq_net::Timestamp::from_micros(15_000).unwrap()))
 			.unwrap();
+		producer.write(frame(20_000, true)).unwrap();
 		producer.finish().unwrap();
 
-		let mut groups = Vec::new();
-		let mut consumer = consumer;
-		while let Some(mut group) = consumer.recv_group().await.unwrap() {
-			let mut count = 0;
-			while group.next_frame().await.unwrap().is_some() {
-				count += 1;
-			}
-			groups.push(count);
-		}
-		assert_eq!(groups, vec![1], "LOC producers do not write the marker yet");
+		let groups = collect_loc_payloads(consumer).await;
+		assert_eq!(groups[0], vec![(0, 2), (10_000, 2), (15_000, 0)]);
+		assert_eq!(groups[1][0], (20_000, 2));
+		assert_eq!(groups[1].last().unwrap().1, 0, "finish closes the last group");
+	}
+
+	/// LOC audio never writes a duration marker, even at finish.
+	#[tokio::test]
+	async fn loc_audio_writes_no_duration_marker() {
+		let track = track_producer("test", hang::container::track_info(hang::catalog::PRIORITY.audio));
+		let consumer = track.subscribe(replay());
+		let mut producer = Producer::new(track, Container::Loc(crate::container::Kind::Audio));
+
+		producer.write(frame(0, true)).unwrap();
+		producer.write(frame(20_000, false)).unwrap();
+		producer
+			.cut(Some(moq_net::Timestamp::from_micros(30_000).unwrap()))
+			.unwrap();
+		producer.write(frame(40_000, true)).unwrap();
+		producer.finish().unwrap();
+
+		assert_eq!(
+			collect_loc_payloads(consumer).await,
+			vec![vec![(0, 2), (20_000, 2)], vec![(40_000, 2)]]
+		);
+	}
+
+	/// LOC data tracks never write a duration marker, so an empty data frame stays data.
+	#[tokio::test]
+	async fn loc_data_writes_no_duration_marker() {
+		let track = track_producer("test", hang::container::track_info(hang::catalog::PRIORITY.video));
+		let consumer = track.subscribe(replay());
+		let mut producer = Producer::new(track, Container::Loc(crate::container::Kind::Data));
+
+		producer.write(frame(0, true)).unwrap();
+		producer
+			.cut(Some(moq_net::Timestamp::from_micros(15_000).unwrap()))
+			.unwrap();
+		producer.write(frame(20_000, true)).unwrap();
+		producer.finish().unwrap();
+
+		assert_eq!(
+			collect_loc_payloads(consumer).await,
+			vec![vec![(0, 2)], vec![(20_000, 2)]]
+		);
 	}
 
 	/// `cut()` flushes the current group immediately; the next write must be a keyframe.

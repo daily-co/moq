@@ -54,6 +54,9 @@ pub struct Config<S: crate::transport::poll::Session> {
 	/// transports). A server passes `None`.
 	pub path: Option<String>,
 
+	/// The URI authority we advertise in our SETUP, under the same rules as `path`.
+	pub authority: Option<String>,
+
 	/// The peer's SETUP stream, when it was already read before [`start`] (a draft-17+
 	/// server that gated on the client's path via [`accept_setup`]). It becomes the
 	/// GOAWAY channel; `None` lets the uni loop read the SETUP itself.
@@ -80,6 +83,7 @@ where
 		cost,
 		version,
 		path,
+		authority,
 		peer_setup_stream,
 		peer_declared,
 	} = config;
@@ -239,7 +243,7 @@ where
 					Ok(())
 				}));
 
-				kio::wait(|waiter| {
+				let res = kio::wait(|waiter| {
 					use std::task::Poll;
 					if let Poll::Ready(err) = waiter.poll_future(adapter_run.as_mut()) {
 						return Poll::Ready(Err::<(), Error>(err));
@@ -261,7 +265,12 @@ where
 					}
 					Poll::Pending
 				})
-				.await
+				.await;
+				if let Err(err) = &res {
+					// Every track this session was receiving ends with its error.
+					subscriber.abort(err);
+				}
+				res
 			}
 			_ => {
 				// Send SETUP and keep the stream alive: it is also our GOAWAY channel.
@@ -270,7 +279,9 @@ where
 					let session = session.clone();
 					let goaway = goaway.clone();
 					async move {
-						if let Err(err) = run_setup(runtime, session, version, path, self_origin, cost, goaway).await {
+						if let Err(err) =
+							run_setup(runtime, session, version, path, authority, self_origin, cost, goaway).await
+						{
 							tracing::warn!(%err, "setup send error");
 						}
 						std::future::pending::<()>().await;
@@ -366,7 +377,7 @@ where
 					Ok(())
 				}));
 
-				kio::wait(|waiter| {
+				let res = kio::wait(|waiter| {
 					use std::task::Poll;
 					if let Poll::Ready(err) = waiter.poll_future(unis.as_mut()) {
 						return Poll::Ready(Err::<(), Error>(err));
@@ -391,7 +402,12 @@ where
 					}
 					Poll::Pending
 				})
-				.await
+				.await;
+				if let Err(err) = &res {
+					// Every track this session was receiving ends with its error.
+					subscriber.abort(err);
+				}
+				res
 			}
 		};
 
@@ -424,6 +440,9 @@ pub struct PeerSetup<S: crate::transport::poll::Session> {
 
 	/// The request path the peer advertised, for URL-less transports.
 	pub path: Option<String>,
+
+	/// The credential the peer presented in its `AUTHORIZATION TOKEN` option.
+	pub token: Option<crate::setup::Token>,
 
 	/// The Setup Options it declared (see [`cluster`] and [`solicit`]).
 	pub declared: peer::Peer,
@@ -475,11 +494,13 @@ pub async fn accept_setup<S: crate::transport::poll::Session>(
 			),
 			None => None,
 		};
+		let token = super::token::from_setup(&params, version)?;
 		let declared = peer_from_params(&params, version)?;
 
 		return Ok(PeerSetup {
 			stream: reader,
 			path,
+			token,
 			declared,
 		});
 	}
@@ -509,11 +530,13 @@ fn peer_from_params(params: &ietf::Parameters, version: Version) -> Result<peer:
 /// server passes `None`. `self_origin` and `cost` are the MoQ Cluster options, which
 /// declare our identity and (client-only) what this link costs to cross. The MoQ Solicit
 /// declaration is unconditional, so it takes no argument.
+#[allow(clippy::too_many_arguments)]
 async fn run_setup<S: crate::transport::poll::Session>(
 	runtime: crate::time::Clock,
 	mut session: S,
 	version: Version,
 	path: Option<String>,
+	authority: Option<String>,
 	self_origin: Hop,
 	cost: Option<u64>,
 	goaway: crate::goaway::Protocol,
@@ -527,6 +550,9 @@ async fn run_setup<S: crate::transport::poll::Session>(
 	parameters.set_bytes(ietf::ParameterBytes::Implementation, b"moq-lite-rs".to_vec());
 	if let Some(path) = path {
 		parameters.set_bytes(ietf::ParameterBytes::Path, path.into_bytes());
+	}
+	if let Some(authority) = authority {
+		parameters.set_bytes(ietf::ParameterBytes::Authority, authority.into_bytes());
 	}
 	cluster::peer_into_setup(&mut parameters, self_origin, cost, version);
 	solicit::into_setup(&mut parameters, version);
@@ -931,6 +957,7 @@ mod tests {
 			cost: None,
 			version: VERSION,
 			path: None,
+			authority: None,
 			peer_setup_stream: None,
 			// A peer that declared its Hop ID negotiated the extension, which is what
 			// makes the cluster parameters mandatory in both directions.
@@ -989,6 +1016,7 @@ mod tests {
 			cost: None,
 			version: Version::Draft18,
 			path: None,
+			authority: None,
 			peer_setup_stream: None,
 			// The requests wait on the peer's SETUP (MoQ Hidden).
 			peer_declared: Some(peer::Peer::default()),
@@ -1040,6 +1068,7 @@ mod tests {
 			cost: None,
 			version: Version::Draft18,
 			path: None,
+			authority: None,
 			peer_setup_stream: None,
 			peer_declared,
 		})
@@ -1147,6 +1176,7 @@ mod tests {
 			cost: None,
 			version: VERSION,
 			path: None,
+			authority: None,
 			peer_setup_stream: None,
 			// Pre-settled, so nothing waits on a SETUP the dead stream will never
 			// carry and the dispatch loop actually runs.
@@ -1159,6 +1189,49 @@ mod tests {
 			.expect_err("the session ended over one dead stream");
 
 		assert_eq!(log.closes(), vec![], "nothing may close the transport");
+	}
+
+	/// A draft-17+ client advertises its AUTHORITY in the SETUP it writes on its uni stream.
+	#[tokio::test]
+	async fn setup_carries_the_authority() {
+		const AUTHORITY: &[u8] = b"relay.example.com:4443";
+
+		// The driver parks forever once SETUP is out, so bound it: paused time makes the
+		// deadline fire the moment nothing else can run.
+		tokio::time::pause();
+
+		for version in [Version::Draft18, Version::Draft19] {
+			let session = crate::lite::test_transport::ScriptedSession::new(Vec::new());
+			let log = session.log.clone();
+
+			let (driver, _goaway) = start(Config {
+				runtime: crate::time::Clock::tokio(),
+				session,
+				setup: None,
+				request_id_max: None,
+				client: true,
+				publish: None,
+				subscribe: None,
+				peer_hop: None,
+				cost: None,
+				version,
+				path: None,
+				authority: Some(String::from_utf8(AUTHORITY.to_vec()).unwrap()),
+				peer_setup_stream: None,
+				peer_declared: Some(peer::Peer::default()),
+			})
+			.expect("start the session");
+
+			tokio::time::timeout(std::time::Duration::from_secs(10), driver)
+				.await
+				.expect_err("the session ended instead of parking after SETUP");
+
+			assert_eq!(
+				occurrences(&log, AUTHORITY),
+				1,
+				"{version:?}: SETUP must carry the authority once"
+			);
+		}
 	}
 
 	#[tokio::test]
@@ -1339,6 +1412,7 @@ mod tests {
 			cost: None,
 			version: VERSION,
 			path: None,
+			authority: None,
 			peer_setup_stream: None,
 			peer_declared: None,
 		})

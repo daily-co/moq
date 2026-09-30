@@ -26,10 +26,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
 use std::task::{Poll, ready};
 
-#[cfg(test)]
-use crate::Timestamp;
-use crate::{Datagram, Error, Result, frame, group, track};
-use track::{Anchor, LiveEdge, Successor};
+use crate::{Datagram, Error, Result, Timestamp, frame, group, track};
+use track::{Anchor, LiveEdge};
 
 use super::subscription::{Cap, Position, Subscription, max_some, min_some};
 
@@ -144,16 +142,58 @@ fn slice(prefs: &Subscription, start: Option<Position>, end: Option<Position>) -
 	}
 }
 
-/// The first servable group in `from..cap` across `segments`, with the slot identity a
-/// later judgment needs. An unstamped group stops the search: skipping it for a later
-/// start would shrink a reach that is not yet proven.
-fn served_start(segments: &[Segment], from: u64, cap: Option<u64>) -> Option<Successor> {
-	segments.iter().find_map(|segment| {
+/// Where the first servable group in `from..cap` across `segments` starts presenting;
+/// see [`track::Consumer::poll_first_start`]. An unstamped group stops the search:
+/// skipping it for a later start would shrink a reach that is not yet proven.
+fn poll_first_start<'a>(
+	segments: impl IntoIterator<Item = &'a Segment>,
+	waiter: &kio::Waiter,
+	from: u64,
+	cap: Option<u64>,
+) -> Option<Option<Timestamp>> {
+	segments.into_iter().find_map(|segment| {
 		let start = segment.start.map_or(0, |start| start.group).max(from);
 		segment
 			.track
-			.served_start(start, min_some(cap, last_group(segment.end)))
+			.poll_first_start(waiter, start, min_some(cap, last_group(segment.end)))
 	})
+}
+
+/// Where a splice continues past the exclusive group `boundary` of segment `after`,
+/// below the reader's `cap`: the first group the later segments serve there. Holds the
+/// question rather than a cached answer, so a group aborted or evicted before its first
+/// frame hands the bound to whichever group serves there next.
+#[derive(Clone)]
+pub(crate) struct Successor {
+	state: kio::ConsumerWeak<ResumeState>,
+	after: u64,
+	boundary: u64,
+	cap: Option<u64>,
+}
+
+impl Successor {
+	/// Where the successor starts presenting: `None` while no later group is cached or
+	/// the first one is unstamped. Registers `waiter` for anything that could move it.
+	/// Takes the splice's and its segments' locks, so never call it under a track's.
+	pub(crate) fn poll_start(&self, waiter: &kio::Waiter) -> Option<Timestamp> {
+		let mut start = None;
+		let _ = self.state.poll(waiter, |state| {
+			// A draining reader's own segment may already have been pruned.
+			let later = state.segments.iter().filter(|segment| segment.id > self.after);
+			start = poll_first_start(later, waiter, self.boundary, self.cap).flatten();
+			Poll::<()>::Pending
+		});
+		start
+	}
+}
+
+impl PartialEq for Successor {
+	fn eq(&self, other: &Self) -> bool {
+		self.after == other.after
+			&& self.boundary == other.boundary
+			&& self.cap == other.cap
+			&& self.state.same_channel(&other.state)
+	}
 }
 
 /// How many segments a logical track keeps before pruning terminal ones from the
@@ -246,14 +286,6 @@ impl ResumeState {
 				(edge.sequence >= start).then_some(edge)
 			})
 			.max_by_key(|edge| edge.sequence)
-	}
-
-	/// Where the logical track continues past the exclusive group `boundary` of segment
-	/// `id`, below the reader's `cap`: the start of the first group the later segments
-	/// serve there. `None` while none is cached, or it has no frame yet.
-	fn successor(&self, id: u64, boundary: u64, cap: Option<u64>) -> Option<Successor> {
-		let index = self.segments.iter().position(|segment| segment.id == id)?;
-		served_start(&self.segments[index + 1..], boundary, cap)
 	}
 
 	/// Append a segment serving the track from `start` onward, capping (or replacing)
@@ -518,6 +550,11 @@ impl Producer {
 		self.state.read().abort.is_some()
 	}
 
+	/// Whether `other` produces the same logical track.
+	pub(crate) fn is_clone(&self, other: &Self) -> bool {
+		self.state.same_channel(&other.state)
+	}
+
 	/// Create a read handle for the logical track.
 	pub fn consume(&self) -> Consumer {
 		Consumer {
@@ -701,10 +738,20 @@ impl Consumer {
 		self.state.read().live_edge(cap)
 	}
 
-	/// Where the first servable group in `from..cap` starts, with the identity to
-	/// revalidate it; see [`track::Consumer::served_start`].
-	pub(crate) fn served_start(&self, from: u64, cap: Option<u64>) -> Option<Successor> {
-		served_start(&self.state.read().segments, from, cap)
+	/// Where the first servable group in `from..cap` starts presenting; see
+	/// [`track::Consumer::poll_first_start`].
+	pub(crate) fn poll_first_start(
+		&self,
+		waiter: &kio::Waiter,
+		from: u64,
+		cap: Option<u64>,
+	) -> Option<Option<Timestamp>> {
+		let mut start = None;
+		let _ = self.state.poll(waiter, |state| {
+			start = poll_first_start(&state.segments, waiter, from, cap);
+			Poll::<()>::Pending
+		});
+		start
 	}
 
 	/// The newest cached group across every spliced segment; see
@@ -1405,8 +1452,8 @@ impl SegmentSub {
 	}
 
 	/// Move an active cursor into terminal retention and mark the segment done.
-	fn complete(&mut self, count: Option<u64>) {
-		let previous = std::mem::replace(&mut self.sub, SubState::Done(count));
+	fn complete(&mut self, end: Result<u64>) {
+		let previous = std::mem::replace(&mut self.sub, SubState::Done(end));
 		if let SubState::Active(sub) = previous {
 			self.terminal = Some(*sub);
 		}
@@ -1449,23 +1496,22 @@ enum SubState {
 	/// Live cursor over the underlying track. Boxed: the subscriber dwarfs the other
 	/// variants, and every segment holds this enum.
 	Active(Box<track::Subscriber>),
-	/// The underlying track ended: `Some` with the group count when it finished
-	/// cleanly, `None` when it aborted or was dropped. An abort is deliberately
-	/// not surfaced: a dead route stalls the logical track until the next switch
-	/// replaces it.
-	Done(Option<u64>),
+	/// The underlying track ended: `Ok` with the group count when it finished
+	/// cleanly, `Err` with the cause when it aborted or was dropped. An abort only
+	/// surfaces once no switch can follow: until then a dead route stalls the
+	/// logical track for the next switch to replace.
+	Done(Result<u64>),
 }
 
 /// A live subscription spliced across every segment of a logical track.
 ///
 /// Reads switch between the underlying [`track::Subscriber`]s at the segment
 /// boundaries. A segment's session failing does not error the subscription; it
-/// stalls until [`Producer::switch`] provides a replacement, or ends cleanly once
-/// the producer [`finish`](Producer::finish)es and the final segment completes.
-/// The producer itself going away without a terminal state ends the track as its
-/// final segment's track ended, once the remaining segments drain: cleanly if it
-/// finished, [`Error::Dropped`] if it died. With nobody left to splice a
-/// replacement, a stall would never end.
+/// stalls until [`Producer::switch`] provides a replacement. Once the producer
+/// [`finish`](Producer::finish)es, or goes away without a terminal state, no
+/// replacement can follow, so the track ends as its final segment's track ended
+/// once the remaining segments drain: cleanly if it finished, with its error if it
+/// died. With nobody left to splice a replacement, a stall would never end.
 pub struct Subscriber {
 	state: kio::Consumer<ResumeState>,
 
@@ -1535,7 +1581,7 @@ impl Subscriber {
 					break;
 				}
 				if seg.pruned {
-					seg.sub = SubState::Done(None);
+					seg.sub = SubState::Done(Err(Error::Dropped));
 					seg.terminal = None;
 					seg.parked.clear();
 					cut -= 1;
@@ -1717,16 +1763,21 @@ impl Subscriber {
 	/// content the logical track holds, which a segment's own track never sees.
 	///
 	/// When the boundary lowers the cap, the reader's next group past it lives in a
-	/// later segment, so `state` supplies where it starts ([`Anchor::successor`]).
-	/// Otherwise the logical anchor's own successor (a wrapping splice's) still holds.
-	fn segment_anchor(seg: &SegmentSub, anchor: Anchor, state: &ResumeState) -> Anchor {
+	/// later segment of `state` ([`Anchor::successor`]). Otherwise the logical anchor's
+	/// own successor (a wrapping splice's) still holds.
+	fn segment_anchor(seg: &SegmentSub, anchor: Anchor, state: &kio::Consumer<ResumeState>) -> Anchor {
 		let Some(boundary) = seg.last_group() else {
 			return anchor;
 		};
 		let cap = anchor.cap;
 		let mut capped = anchor.capped(Some(boundary));
 		if capped.cap != cap {
-			capped.successor = state.successor(seg.id, boundary, cap);
+			capped.successor = Some(Successor {
+				state: state.weak(),
+				after: seg.id,
+				boundary,
+				cap,
+			});
 		}
 		capped
 	}
@@ -1745,8 +1796,9 @@ impl Subscriber {
 	/// logical edge moves whenever any of them grows.
 	fn refresh_anchor(&mut self) {
 		let outer = self.outer.clone().capped(self.end_sequence);
-		let state = self.state.read();
-		let edge = state
+		let edge = self
+			.state
+			.read()
 			.live_edge(outer.cap)
 			.into_iter()
 			.chain(outer.edge.clone())
@@ -1759,7 +1811,7 @@ impl Subscriber {
 			*current = anchor.clone();
 		}
 		for seg in &mut self.segments {
-			let anchor = Self::segment_anchor(seg, anchor.clone(), &state);
+			let anchor = Self::segment_anchor(seg, anchor.clone(), &self.state);
 			seg.anchor = anchor.clone();
 			if let Some(sub) = seg.stale_sub_mut() {
 				sub.set_anchor(anchor);
@@ -1831,7 +1883,8 @@ impl Subscriber {
 			// The copy was asked for the cache's newest group and started past it: its
 			// source judged that group stale, so the older cache is no use to live reads.
 			if start.is_some_and(|start| edge.is_some_and(|edge| start > edge)) {
-				seg.complete(None);
+				// Discarded, not finished: there is no group count, same as a dropped segment.
+				seg.complete(Err(Error::Dropped));
 				return Poll::Ready(());
 			}
 		}
@@ -1852,7 +1905,7 @@ impl Subscriber {
 					seg.sub = SubState::Active(Box::new(sub));
 				}
 				// The underlying track was rejected or closed: stall, not error.
-				Err(_) => seg.sub = SubState::Done(None),
+				Err(err) => seg.sub = SubState::Done(Err(err)),
 			}
 		}
 		Poll::Ready(())
@@ -1881,18 +1934,17 @@ impl Subscriber {
 						return Poll::Ready(Some(group));
 					}
 					Ok(None) => {
-						let count = sub.poll_finished(waiter).map(|res| res.ok());
-						let count = match count {
-							Poll::Ready(count) => count,
-							Poll::Pending => None,
+						let end = match sub.poll_finished(waiter) {
+							Poll::Ready(end) => end,
+							Poll::Pending => Err(Error::Dropped),
 						};
-						seg.complete(count);
+						seg.complete(end);
 						return Poll::Ready(None);
 					}
 					// A dead segment stalls the logical track rather than erroring;
 					// the next switch resumes it.
-					Err(_) => {
-						seg.complete(None);
+					Err(err) => {
+						seg.complete(Err(err));
 						return Poll::Ready(None);
 					}
 				},
@@ -1971,15 +2023,15 @@ impl Subscriber {
 						}
 						// The track ran out at or below the floor: the segment drained.
 						Poll::Ready(Ok(None)) => {
-							let count = match sub.poll_finished(waiter) {
-								Poll::Ready(count) => count.ok(),
-								Poll::Pending => None,
+							let end = match sub.poll_finished(waiter) {
+								Poll::Ready(end) => end,
+								Poll::Pending => Err(Error::Dropped),
 							};
-							seg.complete(count);
+							seg.complete(end);
 						}
 						// A dead segment stalls the logical track rather than erroring;
 						// the next switch resumes it.
-						Poll::Ready(Err(_)) => seg.complete(None),
+						Poll::Ready(Err(err)) => seg.complete(Err(err)),
 						Poll::Pending => all_done = false,
 					},
 					SubState::Pending(_) => all_done = false,
@@ -2007,15 +2059,10 @@ impl Subscriber {
 			if let Some(err) = &self.abort {
 				return Poll::Ready(Err(err.clone()));
 			}
-			if all_done {
-				if self.finished {
-					return Poll::Ready(Ok(None));
-				}
-				// The producer is gone without finishing: no takeover can ever resume
-				// the drained segments, so the track ends as its final segment did.
-				if self.closed {
-					return Poll::Ready(self.orphan_end().map(|()| None));
-				}
+			// Finished or gone, no switch can follow: the track ends as its final
+			// segment did.
+			if all_done && (self.finished || self.closed) {
+				return Poll::Ready(self.final_end().map(|()| None));
 			}
 			return Poll::Pending;
 		}
@@ -2028,9 +2075,9 @@ impl Subscriber {
 	/// out exactly once no matter how many routes contributed to it.
 	///
 	/// Returns `Poll::Ready(Ok(None))` once every segment completed and the
-	/// producer finished, or was dropped with the final segment's track finished.
-	/// Returns `Poll::Ready(Err(_))` if the producer aborted, or was dropped and
-	/// the final segment's track died ([`Error::Dropped`]).
+	/// producer finished or was dropped, with the final segment's track finished.
+	/// Returns `Poll::Ready(Err(_))` if the producer aborted, or if it finished or
+	/// was dropped and the final segment's track died (with that track's error).
 	pub fn poll_recv_group(&mut self, waiter: &kio::Waiter) -> Poll<Result<Option<group::Consumer>>> {
 		self.poll_sync(waiter);
 
@@ -2134,16 +2181,10 @@ impl Subscriber {
 		if let Some(err) = &self.abort {
 			return Poll::Ready(Err(err.clone()));
 		}
-		if all_done {
-			if self.finished {
-				return Poll::Ready(Ok(None));
-			}
-			// The producer is gone without finishing: no takeover can ever
-			// resume the drained segments, so the track ends as its final
-			// segment did rather than stalling forever.
-			if self.closed {
-				return Poll::Ready(self.orphan_end().map(|()| None));
-			}
+		// Finished or gone, no switch can follow: the track ends as its final
+		// segment did rather than stalling forever.
+		if all_done && (self.finished || self.closed) {
+			return Poll::Ready(self.final_end().map(|()| None));
 		}
 		Poll::Pending
 	}
@@ -2217,14 +2258,24 @@ impl Subscriber {
 		if let Some(err) = &self.abort {
 			return Poll::Ready(Err(err.clone()));
 		}
+		// The producer finished, so this channel ends now. A final segment that
+		// already died is that death: the datagram read above drops a Ready(Err)
+		// on the floor, and a clean Ok(None) here would hide it. A segment that
+		// has not activated yet has no end to report.
 		if self.finished {
-			return Poll::Ready(Ok(None));
+			if pending_activation {
+				return Poll::Ready(Ok(None));
+			}
+			return match ready!(self.poll_final(waiter)) {
+				Some(end) => Poll::Ready(end.map(|_| None)),
+				None => Poll::Ready(Ok(None)),
+			};
 		}
 		// The producer is gone: no takeover is coming, so the track ends when
 		// its newest segment does, and the way it did.
 		if self.closed && !pending_activation {
 			return match ready!(self.poll_final(waiter)) {
-				Some(_) => Poll::Ready(Ok(None)),
+				Some(end) => Poll::Ready(end.map(|_| None)),
 				None => Poll::Ready(Err(Error::Dropped)),
 			};
 		}
@@ -2249,40 +2300,62 @@ impl Subscriber {
 		if !self.finished && !self.closed {
 			return Poll::Pending;
 		}
-		let end = ready!(self.poll_final(waiter));
-		match self.finished {
-			true => Poll::Ready(Ok(end.unwrap_or(0))),
-			// The producer is gone without finishing: the track ends as its final
-			// segment did.
-			false => Poll::Ready(end.ok_or(Error::Dropped)),
+		// The track ends as its final segment did, or with nothing spliced, cleanly
+		// only if it finished.
+		match ready!(self.poll_final(waiter)) {
+			Some(end) => Poll::Ready(end),
+			None if self.finished => Poll::Ready(Ok(0)),
+			None => Poll::Ready(Err(Error::Dropped)),
 		}
 	}
 
+	/// Poll for where the source of the first live segment reaching this cursor's floor
+	/// starts, raised to the floor, once resolved; see [`track::Subscriber::poll_start`].
+	/// A segment ending at or below the floor, or one that already ended, serves nothing
+	/// more here, so its source is not waited on. Like [`Self::poll_final`], this only
+	/// resolves the subscription and consumes no groups.
+	pub(crate) fn poll_start(&mut self, waiter: &kio::Waiter) -> Poll<Option<u64>> {
+		self.poll_sync(waiter);
+		let floor = self.min_sequence;
+		for seg in &mut self.segments {
+			if seg.last_group().is_some_and(|last| last <= floor) {
+				continue;
+			}
+			ready!(Self::poll_activate(seg, &self.last_prefs, floor, waiter));
+			if let SubState::Active(sub) = &mut seg.sub {
+				return Poll::Ready(ready!(sub.poll_start(waiter)).map(|start| start.max(floor)));
+			}
+		}
+		Poll::Ready(None)
+	}
+
 	/// Wait for the final segment's track to end: its group count when it
-	/// finished, `None` when it died or there is no segment. Earlier segments don't
+	/// finished, its error when it died, and `None` when there is no segment. Earlier segments don't
 	/// decide the end. Only the subscription is resolved here: consuming groups, or
 	/// completing the segment, would steal them from a `recv_group` caller on the
 	/// same subscriber.
-	fn poll_final(&mut self, waiter: &kio::Waiter) -> Poll<Option<u64>> {
+	fn poll_final(&mut self, waiter: &kio::Waiter) -> Poll<Option<Result<u64>>> {
 		let Some(seg) = self.segments.last_mut() else {
 			return Poll::Ready(None);
 		};
 		ready!(Self::poll_activate(seg, &self.last_prefs, self.min_sequence, waiter));
 		match &mut seg.sub {
-			SubState::Done(count) => Poll::Ready(*count),
+			SubState::Done(end) => Poll::Ready(Some(end.clone())),
 			// Observe only: the cursor may still hold groups, so the read path
 			// completes the segment once it drains.
-			SubState::Active(sub) => Poll::Ready(ready!(sub.poll_finished(waiter)).ok()),
+			SubState::Active(sub) => Poll::Ready(Some(ready!(sub.poll_finished(waiter)))),
 			SubState::Pending(_) => unreachable!("poll_activate resolved above"),
 		}
 	}
 
-	/// How a logical track whose producer went away without finishing ends, once
-	/// every segment drained: cleanly if its final segment's track finished, since
-	/// that is where the content ended, and [`Error::Dropped`] otherwise.
-	fn orphan_end(&self) -> Result<()> {
+	/// How a logical track ends once every segment drained and no switch can follow
+	/// (the producer finished or went away): as its final segment's track ended, since
+	/// that is where the content ended. A finished track with no segment ends cleanly;
+	/// an orphaned one with [`Error::Dropped`].
+	fn final_end(&self) -> Result<()> {
 		match self.segments.last().map(|seg| &seg.sub) {
-			Some(SubState::Done(Some(_))) => Ok(()),
+			Some(SubState::Done(end)) => end.clone().map(|_| ()),
+			None if self.finished => Ok(()),
 			_ => Err(Error::Dropped),
 		}
 	}
@@ -2481,6 +2554,58 @@ mod test {
 		assert_eq!(recv(&mut sub), 2);
 		assert_eq!(recv(&mut sub), 3);
 		recv_pending(&mut sub);
+	}
+
+	/// A segment that ends at or below the cursor's floor serves it nothing, so its
+	/// source's unresolved start must not hold up the start of the segment that does.
+	#[tokio::test]
+	async fn poll_start_skips_a_segment_below_the_floor() {
+		let (mut track_a, consumer_a) = track_pair("a");
+		let (mut track_b, consumer_b) = track_pair("b");
+		track_a.request_start(Some(0)).unwrap();
+		track_b.request_start(Some(5)).unwrap();
+
+		let mut producer = Producer::new();
+		producer.switch(&consumer_a, None).unwrap();
+		producer.switch(&consumer_b, Position::group(5)).unwrap();
+
+		let mut sub = producer.consume().subscribe(replay());
+		sub.start_at(10);
+		assert!(
+			kio::wait(|waiter| sub.poll_start(waiter)).now_or_never().is_none(),
+			"B's source has not resolved yet"
+		);
+
+		// A's source never resolves: it serves nothing at or above the floor.
+		track_b.start_at(12).unwrap();
+		let start = kio::wait(|waiter| sub.poll_start(waiter)).now_or_never();
+		assert_eq!(start, Some(Some(12)), "waited on a segment below the floor");
+	}
+
+	/// A segment that already ended serves nothing more, so the start comes from the next
+	/// one rather than falling back to whichever group arrives first.
+	#[tokio::test]
+	async fn poll_start_skips_an_ended_segment() {
+		let (track_a, consumer_a) = track_pair("a");
+		let (mut track_b, consumer_b) = track_pair("b");
+		track_b.request_start(Some(5)).unwrap();
+
+		let mut producer = Producer::new();
+		producer.switch(&consumer_a, None).unwrap();
+		producer.switch(&consumer_b, Position::group(5)).unwrap();
+		track_a.abort(Error::Cancel).unwrap();
+
+		let mut sub = producer.consume().subscribe(replay());
+		// Reading drains A to its end, leaving nothing for it to serve.
+		recv_pending(&mut sub);
+		assert!(
+			kio::wait(|waiter| sub.poll_start(waiter)).now_or_never().is_none(),
+			"B's source has not resolved yet"
+		);
+
+		track_b.start_at(5).unwrap();
+		let start = kio::wait(|waiter| sub.poll_start(waiter)).now_or_never();
+		assert_eq!(start, Some(Some(5)));
 	}
 
 	#[tokio::test]
@@ -3224,6 +3349,157 @@ mod test {
 		})
 		.collect();
 		assert_eq!(replayed, vec![0, 1, 2, 3], "a backlog inside the budget crosses whole");
+	}
+
+	#[tokio::test]
+	async fn unstamped_successor_segment_keeps_the_previous_group_unbounded() {
+		let (mut a, a_read) = track_pair("a");
+		let (b, b_read) = track_pair("b");
+		let (mut c, c_read) = track_pair("c");
+		write_group_at(&mut a, 0, "a0", Duration::ZERO);
+		let _unstamped = b.create_group(1u64.into()).unwrap();
+		write_group_at(&mut c, 2, "c2", Duration::from_secs(10));
+		write_group_at(&mut c, 3, "c3", Duration::from_secs(20));
+		let mut producer = Producer::new();
+		producer.switch(a_read, None).unwrap();
+		producer.switch(b_read, Position::group(1)).unwrap();
+		producer.switch(c_read, Position::group(2)).unwrap();
+		let mut sub = producer.consume().subscribe(None);
+		assert_eq!(
+			recv(&mut sub),
+			0,
+			"the unstamped successor must not borrow segment C's start"
+		);
+	}
+
+	/// A handed-out group parked at its tail is re-judged once its unstamped successor in
+	/// the next segment presents a first frame. That frame touches only the successor's
+	/// group, not either track or the drift anchor, so the read has to watch it directly.
+	#[tokio::test]
+	async fn unstamped_successor_first_frame_wakes_a_parked_read() {
+		use std::task::Context;
+
+		let (a, a_read) = track_pair("a");
+		let (mut b, b_read) = track_pair("b");
+		let mut head = a.create_group(0u64.into()).unwrap();
+		head.write_frame(Timestamp::ZERO, b"a0".to_vec()).unwrap();
+		let mut successor = b.create_group(1u64.into()).unwrap();
+		write_group_at(&mut b, 2, "edge", Duration::from_secs(20));
+		let mut producer = Producer::new();
+		producer.switch(a_read, None).unwrap();
+		producer.switch(b_read, Position::group(1)).unwrap();
+		let mut sub = producer.consume().subscribe(None);
+		let mut reading = sub.recv_group().now_or_never().unwrap().unwrap().unwrap();
+		assert_eq!(reading.sequence, 0, "an unbounded reach is not stale");
+		assert_eq!(read(&mut reading), b"a0");
+
+		let (counter, waker) = CountWaker::new();
+		let mut cx = Context::from_waker(&waker);
+		let mut next = std::pin::pin!(reading.read_frame());
+		assert!(next.as_mut().poll(&mut cx).is_pending());
+
+		let before = counter.count();
+		successor
+			.write_frame(Duration::from_secs(1).try_into().unwrap(), b"b1".to_vec())
+			.unwrap();
+		assert!(counter.count() > before, "the successor's first frame lost its wakeup");
+		let result = next.as_mut().poll(&mut cx);
+		assert!(matches!(result, Poll::Ready(Ok(None))), "the head is stale: {result:?}");
+	}
+
+	/// An unstamped successor aborted before its first frame no longer names where the
+	/// track continues, so a read parked at the previous group's tail re-resolves it:
+	/// first to a later group already cached, then to one that arrives after the abort.
+	#[tokio::test]
+	async fn aborted_unstamped_successor_re_resolves_a_parked_read() {
+		use std::task::Context;
+
+		let (a, a_read) = track_pair("a");
+		let (mut b, b_read) = track_pair("b");
+		let mut head = a.create_group(0u64.into()).unwrap();
+		head.write_frame(Timestamp::ZERO, b"a0".to_vec()).unwrap();
+		let successor = b.create_group(1u64.into()).unwrap();
+		write_group_at(&mut b, 3, "edge", Duration::from_secs(20));
+		let mut producer = Producer::new();
+		producer.switch(a_read, None).unwrap();
+		producer.switch(b_read, Position::group(1)).unwrap();
+		let budget = Subscription::default().with_max_age(Duration::from_secs(10));
+		let mut sub = producer.consume().subscribe(budget);
+		let mut reading = sub.recv_group().now_or_never().unwrap().unwrap().unwrap();
+		assert_eq!(reading.sequence, 0, "an unbounded reach is not stale");
+		assert_eq!(read(&mut reading), b"a0");
+
+		let (counter, waker) = CountWaker::new();
+		let mut cx = Context::from_waker(&waker);
+		let mut next = std::pin::pin!(reading.read_frame());
+		assert!(next.as_mut().poll(&mut cx).is_pending());
+
+		successor.abort(Error::Cancel).unwrap();
+		// Group 3 is now the successor, and the edge itself: within the budget.
+		assert!(next.as_mut().poll(&mut cx).is_pending());
+
+		let before = counter.count();
+		write_group_at(&mut b, 2, "b2", Duration::from_secs(1));
+		assert!(counter.count() > before, "the replacement successor lost its wakeup");
+		let result = next.as_mut().poll(&mut cx);
+		assert!(matches!(result, Poll::Ready(Ok(None))), "the head is stale: {result:?}");
+	}
+
+	/// The same across segments: once the next segment's only group is aborted, the
+	/// segment after it says where the track continues.
+	#[tokio::test]
+	async fn aborted_unstamped_successor_re_resolves_across_segments() {
+		use std::task::Context;
+
+		let (a, a_read) = track_pair("a");
+		let (b, b_read) = track_pair("b");
+		let (mut c, c_read) = track_pair("c");
+		let mut head = a.create_group(0u64.into()).unwrap();
+		head.write_frame(Timestamp::ZERO, b"a0".to_vec()).unwrap();
+		let successor = b.create_group(1u64.into()).unwrap();
+		write_group_at(&mut c, 2, "c2", Duration::from_secs(1));
+		write_group_at(&mut c, 3, "c3", Duration::from_secs(20));
+		let mut producer = Producer::new();
+		producer.switch(a_read, None).unwrap();
+		producer.switch(b_read, Position::group(1)).unwrap();
+		producer.switch(c_read, Position::group(2)).unwrap();
+		let mut sub = producer.consume().subscribe(None);
+		let mut reading = sub.recv_group().now_or_never().unwrap().unwrap().unwrap();
+		assert_eq!(reading.sequence, 0, "an unbounded reach is not stale");
+		assert_eq!(read(&mut reading), b"a0");
+
+		let (counter, waker) = CountWaker::new();
+		let mut cx = Context::from_waker(&waker);
+		let mut next = std::pin::pin!(reading.read_frame());
+		assert!(next.as_mut().poll(&mut cx).is_pending());
+
+		let before = counter.count();
+		successor.abort(Error::Cancel).unwrap();
+		assert!(counter.count() > before, "the successor's abort lost its wakeup");
+		let result = next.as_mut().poll(&mut cx);
+		assert!(matches!(result, Poll::Ready(Ok(None))), "the head is stale: {result:?}");
+	}
+
+	#[tokio::test]
+	async fn pruned_segment_boundary_is_judged_against_later_segments() {
+		let (mut a, a_read) = track_pair("a");
+		let mut producer = Producer::new();
+		producer.switch(a_read, None).unwrap();
+		let mut sub = producer.consume().subscribe(None);
+		// Keep A's cursor draining while its newest group advances beyond the late boundary group.
+		write_group_at(&mut a, 0, "a0", Duration::ZERO);
+		assert_eq!(recv(&mut sub), 0);
+		write_group_at(&mut a, 3, "past-boundary", Duration::from_secs(3));
+		for sequence in 3..=(2 + MAX_SEGMENTS as u64) {
+			let (mut track, consumer) = track_pair("later");
+			producer.switch(consumer, Position::group(sequence)).unwrap();
+			write_group_at(&mut track, sequence, "later", Duration::from_secs(sequence * 10));
+			assert_eq!(recv(&mut sub), sequence);
+		}
+		assert!(producer.state.read().pruned.is_some());
+		// A's boundary group arrives after A was pruned; it is stale against group 3's start.
+		write_group_at(&mut a, 2, "a2", Duration::from_secs(2));
+		recv_pending(&mut sub);
 	}
 
 	/// A segment's track never sees the groups of the segments after it: its own edge
@@ -4895,12 +5171,61 @@ mod test {
 		assert_eq!(recv(&mut sub), 0);
 
 		// The segment dies, then the producer goes away without finish/abort:
-		// no takeover can ever come, so stalling would hang forever.
-		track_a.abort(Error::Cancel).unwrap();
+		// no takeover can ever come, so stalling would hang forever. The track
+		// ends with the segment's own error.
+		track_a.abort(Error::Timeout).unwrap();
 		drop(producer);
 
 		let result = sub.recv_group().now_or_never().expect("must not stall forever");
-		assert!(matches!(result, Err(Error::Dropped)));
+		assert!(matches!(result, Err(Error::Timeout)));
+	}
+
+	/// A finished logical track ends as its final segment did: a segment cut off
+	/// after the finish (its session died with a group still in flight) is an
+	/// error, not a clean end.
+	#[tokio::test]
+	async fn finished_producer_ends_with_a_dead_final_segment() {
+		let (mut track_a, consumer_a) = track_pair("a");
+
+		let mut producer = Producer::new();
+		producer.switch(&consumer_a, None).unwrap();
+		let mut sub = producer.consume().subscribe(None);
+
+		write_group(&mut track_a, 0, "a0");
+		assert_eq!(recv(&mut sub), 0);
+
+		producer.finish().unwrap();
+		track_a.abort(Error::Timeout).unwrap();
+
+		let result = sub.recv_group().now_or_never().expect("must not stall forever");
+		assert!(matches!(result, Err(Error::Timeout)));
+	}
+
+	/// A datagram-only reader of a finished logical track ends with the final
+	/// segment's error. The datagram poll drops a segment error that is not
+	/// `Ok(Some)`, so the finished path has to ask the segment itself.
+	#[tokio::test]
+	async fn finished_producer_ends_datagrams_with_a_dead_final_segment() {
+		let (track_a, consumer_a) = track_pair("a");
+
+		let mut producer = Producer::new();
+		producer.switch(&consumer_a, None).unwrap();
+		let mut sub = producer.consume().subscribe(None);
+
+		assert!(
+			kio::wait(|waiter| sub.poll_recv_datagram(waiter))
+				.now_or_never()
+				.is_none(),
+			"no datagram yet"
+		);
+
+		producer.finish().unwrap();
+		track_a.abort(Error::Timeout).unwrap();
+
+		let result = kio::wait(|waiter| sub.poll_recv_datagram(waiter))
+			.now_or_never()
+			.expect("must not stall forever");
+		assert!(matches!(result, Err(Error::Timeout)));
 	}
 
 	#[tokio::test]
@@ -4943,12 +5268,12 @@ mod test {
 			);
 			match clean {
 				true => track_a.finish().unwrap(),
-				false => track_a.abort(Error::Cancel).unwrap(),
+				false => track_a.abort(Error::Timeout).unwrap(),
 			}
 			let result = sub.finished().now_or_never().expect("must not stall forever");
 			match clean {
 				true => assert!(matches!(result, Ok(0))),
-				false => assert!(matches!(result, Err(Error::Dropped))),
+				false => assert!(matches!(result, Err(Error::Timeout))),
 			}
 		}
 	}

@@ -34,6 +34,26 @@ Rust and TypeScript speak moq-lite 01 through 06 and moq-transport drafts
 still in progress: it negotiates as `moq-lite-07-wip`, and only when both
 sides explicitly enable it.
 
+## Subscription completion
+
+On moq-lite 07, `SUBSCRIBE_END` counts the group streams opened for the
+subscription. Rust and TypeScript stop waiting for missing streams once that
+many headers have arrived; skipped group sequences add no wait. A stream whose
+header arrived is always read to its end before the subscription completes.
+
+A stream reset before its header arrived cannot be counted, so the subscriber
+still allows a grace period for late streams. The grace uses the subscription's
+nonzero effective maximum age, or one second when no maximum age is set.
+moq-lite 05 and 06 instead account for group sequences using received headers,
+datagrams, and `SUBSCRIBE_DROP`, from the start group the subscription last
+asked for. A lost datagram is not owed, but its hole waits out the grace like a
+lost stream.
+
+From moq-lite 06, an end that contradicts the groups received aborts the track:
+a group at or past `SUBSCRIBE_END`, or a `SUBSCRIBE_END` below a group already
+received. moq-lite 05 specified an inclusive end, so there it only drops that
+group or the early boundary.
+
 ## Discovery
 
 A session can ask for announcements matching a path prefix. The peer replies
@@ -52,7 +72,8 @@ that serves only some of the paths beneath its prefix refuses the rest as they
 are requested. Each route carries the chain of relay identities it passed
 through, which is how forwarding loops are caught, and a cost, which is how a
 subscriber picks among several routes to the same broadcast. A hop of 0 is the
-anonymous mark and travels the chain unchanged. A route that passed through an
+anonymous mark and travels the chain unchanged; when it is the first hop, a relay
+puts a random ID, fresh per connection, in front of it to name the publisher. A route that passed through an
 anonymous hop at any depth ranks below every fully identified route, whatever
 the costs say; among anonymous routes, cost keeps ordering.
 
@@ -67,8 +88,14 @@ can be neither discovered nor requested. A broadcast published locally
 competes with remote routes to its path on cost like any other route, winning
 only a tie. Retracting a route (an unannounce, or the peer's `ANNOUNCE_END`)
 stops new requests from resolving through it but leaves subscriptions already
-in flight alone: each track runs to its own end, the publisher's FIN or reset.
-moq-transport sessions behave the same when a namespace is withdrawn.
+in flight alone: each track runs to its own end or failure. On moq-lite 05 and
+newer, a clean end requires `SUBSCRIBE_END` before the publisher's FIN. A FIN
+without that declaration fails the subscription with `ProtocolViolation`; older
+moq-lite versions use FIN alone. moq-transport requires `PUBLISH_DONE` before FIN.
+moq-transport sessions behave the same when a namespace is withdrawn. A route
+update that changes its first hop, the original publisher, is not a retraction:
+subscriptions in flight drain the old publisher, and new requests resolve
+through the new one.
 
 ### Hidden broadcasts
 
@@ -95,8 +122,12 @@ const announced = connection.announced(Path.Pattern.all(), { hidden: true });
 On the wire, moq-lite 07 (`moq-lite-07-wip`, opt-in only) carries the opt-in
 on each announce request, and
 moq-transport carries it as a `SUBSCRIBE_NAMESPACE` parameter once the peer's
-`SETUP` says it understands one ([hidden](/draft/moq-hidden)). An older peer
-never opts in, so it never discovers hidden routes. Rust sessions always opt in
+`SETUP` says it understands one ([hidden](/draft/moq-hidden)). An older MoQ Lite peer
+never opts in, so it never discovers hidden routes.
+IETF peers that omit the MoQ Hidden setup option receive all authorized
+namespaces, including dot-prefixed namespaces. Peers that declare it opt in
+per subscription; a prefix naming the dot segment itself also lists its
+children. Rust sessions always opt in
 on the wire and filter per local reader, so a relay mirrors everything and
 each consumer decides.
 
@@ -133,10 +164,12 @@ prefixes it is told about.
 
 A subscriber watching under a root sees advertisements named relative to that
 root. The pattern scope filters which prefixes are visible without changing a
-route's prefix. Announce events carry the covered path, captures, and what
+route's prefix. When several routes advertise one prefix, each reader sees the
+best route its scope can use, so a cheaper route scoped elsewhere never hides
+it. Announce events carry the covered path, captures, and what
 happened to it: Rust
-`announce::Update { path, captures: Option<Vec<Pattern>>, route, kind }` and
-TypeScript `Announce.Update { path, captures, route, kind }`, where the kind is
+`announce::Update { prefix, captures: Option<Vec<Pattern>>, route, kind }` and
+TypeScript `Announce.Update { prefix, captures, route, kind }`, where the kind is
 announced, updated (a reprice in place), or retracted. Captures are present when
 the announced prefix pins every wildcard in the most-specific matching scope
 member. The Rust consumer is a `Stream` and the TypeScript one an async iterable.
@@ -149,7 +182,18 @@ prefix and never retries another advertiser or a broader prefix. An advertiser
 running out of capacity withdraws or re-prices its route instead, leaving
 headroom for requests already in flight. Token
 scope is any pattern union; the session asks for each member's literal head on
-the prefix-only wire and filters locally.
+the prefix-only wire and filters locally. In Rust and TypeScript,
+`origin.scope(root, patterns)` narrows the handle's permissions and presents paths
+relative to `root`. Nested scopes intersect with their parent. In Rust,
+`origin.mount(at, target)` reads the subtree at `at` from `target` instead: a
+request for `at/rest` joins the one front at `target/rest`, announcements under
+`target` present under `at`, the handle's patterns still authorize `at/rest`,
+and nothing is published beneath `at`. Mounts never chain: a mount point that
+overlaps another mount's point or any target, its own included, is refused. A session receiving
+into that scoped origin asks for the literal heads of its allowed patterns,
+coalescing duplicate or nested heads. An unscoped origin still asks for the empty
+prefix, covering every namespace. These subscriptions include hidden routes;
+each local announcement reader decides whether to show them.
 
 ```typescript
 import { Path } from "@moq/net";
@@ -198,6 +242,13 @@ delivered as a burst is still old while a congestion stall never expires
 anything on its own. Both ends apply it: the publisher skips a group rather
 than sending it, and the subscriber skips it again as it reads, since the
 publisher only ever sees the most tolerant budget across its subscribers.
+
+Across a native route failover, the reader still judges buffered groups against
+the logical track's live edge, including groups it is draining from a retired
+route. A successor group with no timestamp leaves the preceding group's reach
+unbounded until its first frame arrives; if it is dropped first, the next group
+takes its place. A cached open group's prefix remains
+readable across repeated takeovers and idle resumes.
 
 The publisher declares a retention window per track, which bounds how far back
 a fetch or late subscriber can reach. Media tracks default to 30 seconds so a

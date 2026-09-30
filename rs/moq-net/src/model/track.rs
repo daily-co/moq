@@ -19,6 +19,7 @@ use crate::{broadcast, cache, group, stats};
 use super::{Datagram, Requests};
 
 use super::Cap;
+use super::resume::Successor;
 pub use super::subscription::{Position, Subscription};
 
 use std::{
@@ -295,9 +296,10 @@ pub(crate) struct TrackState {
 	max_sequence: Option<u64>,
 
 	// The sequence of the newest cached group: the live edge, protected from
-	// eviction by never entering the eviction order. Tracked separately from
-	// `max_sequence` because datagrams advance that shared counter, and the live
-	// edge must still demote correctly when the next group lands past one.
+	// eviction by never entering the eviction order until the track is `closed`.
+	// Tracked separately from `max_sequence` because datagrams advance that shared
+	// counter, and the live edge must still demote correctly when the next group
+	// lands past one.
 	latest_group: Option<u64>,
 
 	// Incarnation counter for `Slot::stamp`.
@@ -310,6 +312,11 @@ pub(crate) struct TrackState {
 	// below it will never be produced.
 	sealed: bool,
 
+	// No producer remains (aborted, sealed, or dropped), so nothing protects the live
+	// edge any longer: the pool's idle expiry reclaims it like every other group, and a
+	// stale consumer cannot pin the cache.
+	closed: bool,
+
 	// The first sequence the live feed serves, once the publisher declared one
 	// (the wire's SUBSCRIBE_START). Lower groups never arrive on their own; a
 	// fetch can still create them.
@@ -321,13 +328,17 @@ pub(crate) struct TrackState {
 	// [`Consumer::poll_start`]) wait on it; everything else treats the floor as usual.
 	start_pending: bool,
 
-	// Where production stopped, snapshotted when the cached groups are released (an
+	// Where production stopped, snapshotted when the open groups are released (an
 	// abort, or the last producer dropping). Computed live from the cache otherwise;
 	// see [`Self::resume_position`].
 	resume: Option<Position>,
 
 	// The error that caused the track to be aborted, if any.
 	abort: Option<Error>,
+
+	// Whether the declared end still stands after an abort: every group below it was
+	// produced and finished before the abort landed. See [`Self::is_complete`].
+	settled: bool,
 
 	// Active subscriptions, in their own [`kio::Shared`] so a read-only `Consumer`
 	// registers under that lock instead of writing back into the track state.
@@ -499,15 +510,26 @@ impl TrackState {
 		next_sequence: u64,
 		end_sequence: Option<u64>,
 	) -> Poll<Result<Option<group::Producer>>> {
+		// Nothing more can arrive once the track was sealed (dropped with its end
+		// declared) or aborted. Either closed the channel, so parking is not an option:
+		// the consumer would be handed the abort, or `Dropped`, instead of how it ended.
+		let closed = self.sealed || self.abort.is_some();
+		// Once nothing more is in range: an abort before the end settled cut the track
+		// off. One after it is a clean end (see `is_complete`), as is reaching the end.
+		let end = || match &self.abort {
+			Some(err) if !self.settled => Err(err.clone()),
+			_ => Ok(None),
+		};
+
 		// If the exclusive end is already at or below where we'd resume, no
 		// group can ever satisfy this call until the cap rises. Pending (not
 		// None) so the consumer is parked rather than told the stream is over.
 		// An empty range (`end == 0`) parks even at the first sequence.
-		if let Some(end) = end_sequence
-			&& end <= next_sequence
+		if let Some(cap) = end_sequence
+			&& cap <= next_sequence
 		{
-			if let Some(err) = &self.abort {
-				return Poll::Ready(Err(err.clone()));
+			if closed {
+				return Poll::Ready(end());
 			}
 			return Poll::Pending;
 		}
@@ -528,17 +550,14 @@ impl TrackState {
 		}
 
 		// No in-range group is cached. Decide whether more could ever arrive.
-		if let Some(err) = &self.abort {
-			return Poll::Ready(Err(err.clone()));
-		}
 		// `final_sequence` is one past the last possible sequence. If our
 		// floor is already at/past it, nothing else can land in range.
-		// A sealed track produces nothing more either: the last producer
-		// dropped with the boundary already declared, so a gap below it is
-		// the end, not a wait. Cached in-range groups were returned above.
+		// A closed track produces nothing more either, so a gap below its
+		// boundary is the end, not a wait. Cached in-range groups were
+		// returned above, so an aborted track drains what finished first.
 		// This is the cursor the ordered and spliced readers use.
-		if self.sealed || self.final_sequence.is_some_and(|fin| next_sequence >= fin) {
-			return Poll::Ready(Ok(None));
+		if closed || self.final_sequence.is_some_and(|fin| next_sequence >= fin) {
+			return Poll::Ready(end());
 		}
 		Poll::Pending
 	}
@@ -629,40 +648,20 @@ impl TrackState {
 	/// and `beyond` is where it starts when another track serves it (a splice's next
 	/// segment; see [`Anchor::successor`]).
 	fn reach(&self, sequence: u64, cap: Option<u64>, beyond: Option<Timestamp>) -> Option<Timestamp> {
-		match self.first_start(sequence.saturating_add(1), cap) {
-			Some(start) => start,
+		match self.first_servable(sequence.saturating_add(1), cap) {
+			Some(group) => group.timestamp(),
 			None => beyond,
 		}
 	}
 
-	/// Where the first servable group in `from..cap` starts presenting: `None` when no
-	/// such group is cached, `Some(None)` while it has no frame yet.
-	fn first_start(&self, from: u64, cap: Option<u64>) -> Option<Option<Timestamp>> {
-		let slot = self
-			.lookup
+	/// The first servable group in `from..cap`, stamped or not.
+	fn first_servable(&self, from: u64, cap: Option<u64>) -> Option<&group::Producer> {
+		self.lookup
 			.range(from..)
 			.map(|(_, slot)| slot)
 			.take_while(|slot| super::subscription::before_end(slot.group.sequence, cap))
-			.find(|slot| slot.visible && !slot.group.is_aborted())?;
-		Some(slot.group.timestamp())
-	}
-
-	/// The first servable group's start in `from..cap`, with the slot identity a later
-	/// judgment needs to tell that group from whatever replaces it. `None` when no such
-	/// group is cached or it has no frame yet: an unstamped successor leaves reach
-	/// unbounded, and this does not skip past it to a later group.
-	fn served_start(&self, from: u64, cap: Option<u64>) -> Option<ServedStart> {
-		let slot = self
-			.lookup
-			.range(from..)
-			.map(|(_, slot)| slot)
-			.take_while(|slot| super::subscription::before_end(slot.group.sequence, cap))
-			.find(|slot| slot.visible && !slot.group.is_aborted())?;
-		Some(ServedStart {
-			sequence: slot.group.sequence,
-			stamp: slot.stamp,
-			timestamp: slot.group.timestamp()?,
-		})
+			.find(|slot| slot.visible && !slot.group.is_aborted())
+			.map(|slot| &slot.group)
 	}
 
 	/// Whether the group at `sequence` has drifted further behind `edge` than `budget`
@@ -703,9 +702,9 @@ impl TrackState {
 			.presentation
 			.filter(|live| self.holds(live.sequence, live.stamp))
 			.map(|live| (live.sequence, live.timestamp));
-		// `outer` and `successor` were revalidated on their own tracks before this lock
-		// was taken ([`LiveEdge::is_live`], [`Successor::start`]). There is no slot for
-		// them here, and taking their locks here would nest.
+		// `outer` was revalidated and `successor` resolved on their own tracks before this
+		// lock was taken ([`LiveEdge::is_live`], [`Successor::poll_start`]). There is no
+		// slot for them here, and taking their locks here would nest.
 		let Some((_, timestamp)) = local
 			.into_iter()
 			.chain(edge.outer)
@@ -810,7 +809,7 @@ impl TrackState {
 					continue;
 				}
 				if slot.group.is_aborted()
-					|| (Some(sequence) != self.latest_group
+					|| (!self.protects(sequence)
 						&& slot
 							.group
 							.cache_accessed_tick(scan.gc.then_some(scan.now))
@@ -835,6 +834,26 @@ impl TrackState {
 			|| self.evict.len() > 2 * self.lookup.len() + EVICT_SLACK
 	}
 
+	/// Expire an ended track's idle groups, whose closed channel refuses the write
+	/// [`Self::evict_expired_scan`] takes: abort them in place, releasing their frames,
+	/// and leave the slots, which every read path already skips.
+	pub(super) fn expire_closed(&self, scan: ExpiryScan) {
+		for (sequence, stamp) in &self.evict {
+			let Some(slot) = self.lookup.get(sequence) else {
+				continue;
+			};
+			if slot.stamp == *stamp
+				&& !slot.group.is_aborted()
+				&& slot
+					.group
+					.cache_accessed_tick(scan.gc.then_some(scan.now))
+					.is_some_and(|tick| scan.now.saturating_sub(tick) > scan.max_ticks)
+			{
+				let _ = slot.group.clone().abort(Error::Old);
+			}
+		}
+	}
+
 	/// Apply a scan previously selected by [`Self::expiry_scan`] or
 	/// [`Self::expiry_scan_drain`].
 	pub(super) fn evict_expired_scan(&mut self, scan: ExpiryScan) {
@@ -857,7 +876,7 @@ impl TrackState {
 					self.lookup.remove(&sequence);
 					continue;
 				}
-				if Some(sequence) == self.latest_group
+				if self.protects(sequence)
 					|| slot
 						.group
 						.cache_accessed_tick(scan.gc.then_some(scan.now))
@@ -911,14 +930,32 @@ impl TrackState {
 		self.lookup.get(&sequence).is_some_and(|slot| slot.stamp == stamp)
 	}
 
-	/// Drop every cached group and reset the eviction bookkeeping. Each group's
-	/// access sample lives in its own charge, released when the group itself dies.
-	fn clear_cache(&mut self) {
-		self.lookup.clear();
-		self.arrival.clear();
-		self.evict.clear();
-		self.latest_group = None;
-		self.debt = 0;
+	/// Whether `sequence` is the live edge, which eviction and expiry never take
+	/// while a producer remains.
+	fn protects(&self, sequence: u64) -> bool {
+		!self.closed && Some(sequence) == self.latest_group
+	}
+
+	/// No producer remains: stop protecting the live edge, so the pool's idle expiry
+	/// reclaims every group once readers stop touching it, and a stale consumer can't
+	/// pin the cache (and its frame buffers) forever.
+	fn close_cache(&mut self) {
+		if std::mem::replace(&mut self.closed, true) {
+			return;
+		}
+		if let Some(latest) = self.latest_group
+			&& let Some(slot) = self.lookup.get(&latest)
+		{
+			slot.group.cache_demote();
+			self.evict.push_back((latest, slot.stamp));
+		}
+	}
+
+	/// Drop the open groups nobody will finish now that the track ended abruptly, and
+	/// keep the finished ones for readers still draining. A consumer that already
+	/// pulled an open group keeps its own handle and ends with it.
+	fn drop_open_groups(&mut self) {
+		self.lookup.retain(|_, slot| slot.group.is_finished());
 	}
 
 	/// Attach `info` to this track, clamping the publisher's window down to the
@@ -997,7 +1034,8 @@ impl TrackState {
 				self.evict.push_back((latest, prev.stamp));
 			}
 			self.latest_group = Some(sequence);
-		} else {
+		}
+		if !self.protects(sequence) {
 			group.cache_demote();
 			self.evict.push_back((sequence, stamp));
 		}
@@ -1110,7 +1148,7 @@ impl TrackState {
 				self.lookup.remove(&sequence);
 				continue;
 			}
-			if Some(sequence) == self.latest_group {
+			if self.protects(sequence) {
 				// The live edge is never enqueued, but tolerate finding it anyway.
 				self.evict.push_back((sequence, stamp));
 				continue;
@@ -1169,9 +1207,25 @@ impl TrackState {
 	/// until the remaining groups are produced, or until the last producer drops without
 	/// them. Drives the end-of-stream signal from
 	/// the read methods (`recv_group` / `next_group` / `read_frame` return `None`).
+	///
+	/// An abort before the end settled wins over it: a group below the boundary was
+	/// still open, so the track was cut off rather than ended.
 	fn is_complete(&self) -> bool {
-		self.final_sequence
-			.is_some_and(|fin| self.sealed || self.max_sequence.map_or(0, |max| max.saturating_add(1)) >= fin)
+		// `sealed` is a clean end when the last producer drops. An abort still wins
+		// unless that end had already settled: a group below it was still open.
+		let reached = self
+			.final_sequence
+			.is_some_and(|fin| self.sealed || self.max_sequence.map_or(0, |max| max.saturating_add(1)) >= fin);
+		reached && (self.abort.is_none() || self.settled)
+	}
+
+	/// Whether the declared end is reached and every cached group below it finished,
+	/// so nothing the end promised is still in flight.
+	fn is_settled(&self) -> bool {
+		let Some(fin) = self.final_sequence else {
+			return false;
+		};
+		self.is_complete() && self.lookup.range(..fin).all(|(_, slot)| slot.group.is_finished())
 	}
 
 	/// Where a replacement route should pick this track up: one past the last frame
@@ -1180,8 +1234,8 @@ impl TrackState {
 	///
 	/// `None` while the track has produced nothing, which is an unbounded takeover.
 	fn resume_position(&self) -> Option<Position> {
-		// A snapshot taken when the cache was released wins; the groups it was derived
-		// from are gone.
+		// A snapshot taken when the open groups were released wins; the group it was
+		// derived from may be gone.
 		if self.resume.is_some() {
 			return self.resume;
 		}
@@ -1261,12 +1315,17 @@ impl TrackState {
 /// Record `err` and close the track: the shared tail of [`Producer::abort`] and
 /// [`Producer::abort_unused`].
 fn commit_abort(mut state: kio::Mut<'_, TrackState>, err: Error) {
-	// Snapshot the frame boundary before the cache it's derived from goes away: an
+	// Snapshot the frame boundary before the open group it may sit in goes away: an
 	// abort is exactly when a replacement route asks where to resume.
 	state.resume = state.resume_position();
+	// Decided before the open groups go: the groups below the end are the evidence.
+	state.settled = state.is_settled();
 	state.abort = Some(err);
-	state.clear_cache();
-	state.datagrams.clear();
+	// Keep what finished for consumers still draining: they get it, then the abort (or
+	// the clean end, when the end settled). Clearing here would abort finished groups a
+	// slower reader has not pulled yet. The pool's idle expiry bounds how long they stay.
+	state.drop_open_groups();
+	state.close_cache();
 	state.close();
 }
 
@@ -1570,11 +1629,15 @@ impl Producer {
 
 	/// Abort the track with the given error.
 	///
-	/// Consumes the handle, since nothing can be written to an aborted track. Drops the
-	/// cached groups so a stale [`Consumer`] can't pin them (and their frame buffers) in
-	/// memory forever. Consumers that haven't drained yet surface the abort error instead
-	/// of the leftover cache. Child groups are independent: a consumer that already pulled
-	/// a [`group::Consumer`] keeps its own handle and can finish reading it.
+	/// Consumes the handle, since nothing can be written to an aborted track. Consumers
+	/// still draining get the finished groups, then the abort error. Open groups leave the
+	/// cache; a consumer that already pulled one keeps its own handle and ends with it.
+	/// The pool's idle expiry (see [`cache::Config::with_expiry`]) reclaims the rest, the
+	/// latest group included, so a stale [`Consumer`] can't pin them in memory forever.
+	///
+	/// If the declared end had settled (the final sequence from
+	/// [`finish_at`](Self::finish_at) was reached and every group below it finished),
+	/// consumers get a clean end instead of the error, as after [`finish`](Self::finish).
 	///
 	/// [`finish`](Self::finish) is deliberately not terminal: it declares the final
 	/// sequence, and lower-numbered groups may still be written afterwards.
@@ -1998,10 +2061,10 @@ impl Drop for Alive {
 		if !self.published.load(Ordering::Relaxed) {
 			return;
 		}
-		// The last producer going away without finishing is an abrupt teardown:
-		// release the cached groups so a stale consumer can't pin them (and their
-		// frame buffers) forever, the same as an explicit abort. A cleanly
-		// finished track keeps its cache so consumers can still drain it.
+		// The last producer going away ends the track: nothing protects its live edge
+		// anymore, so the pool's idle expiry reclaims what a stale consumer would pin.
+		// Without a finish it is an abrupt teardown, the same as an explicit abort:
+		// the open groups go and the finished ones stay for readers still draining.
 		// `abort()` closes the channel, so `write()` returns `Err(Ref)`. `finish()`
 		// leaves it open with `final_sequence` set, so inspect both outcomes.
 		match self.state.write() {
@@ -2010,6 +2073,7 @@ impl Drop for Alive {
 					// Groups still missing below the boundary can no longer arrive, so a
 					// reader waiting on one ends cleanly instead of with `Dropped`.
 					state.sealed = true;
+					state.close_cache();
 					return;
 				}
 				if state.abort.is_some() {
@@ -2019,10 +2083,10 @@ impl Drop for Alive {
 					track = %self.name,
 					"track::Producer dropped without finish() or abort()"
 				);
-				// See `abort`: keep the frame boundary once its groups go away.
+				// See `abort`: keep the frame boundary once its open group goes away.
 				state.resume = state.resume_position();
-				state.clear_cache();
-				state.datagrams.clear();
+				state.drop_open_groups();
+				state.close_cache();
 			}
 			Err(state) => {
 				if state.final_sequence.is_some() || state.abort.is_some() {
@@ -2504,17 +2568,7 @@ impl Consumer {
 	/// whatever it last declared, since nothing will resolve it anymore.
 	pub(crate) fn poll_start(&self, waiter: &kio::Waiter) -> Poll<Option<u64>> {
 		match &self.inner {
-			ConsumerKind::Plain(state) => {
-				let res = state.poll(waiter, |state| match state.start_pending && state.abort.is_none() {
-					true => Poll::Pending,
-					false => Poll::Ready(state.start_sequence),
-				});
-				match res {
-					Poll::Ready(Ok(start)) => Poll::Ready(start),
-					Poll::Ready(Err(state)) => Poll::Ready(state.start_sequence),
-					Poll::Pending => Poll::Pending,
-				}
-			}
+			ConsumerKind::Plain(state) => Self::poll_state_start(state, waiter),
 			ConsumerKind::Spliced(_) => Poll::Ready(None),
 		}
 	}
@@ -2525,6 +2579,18 @@ impl Consumer {
 		match &self.inner {
 			ConsumerKind::Plain(state) => Some(state.read().provenance.clone()),
 			ConsumerKind::Spliced(_) => None,
+		}
+	}
+
+	/// [`Self::poll_start`] over one track's state, shared with [`Subscriber::poll_start`].
+	fn poll_state_start(state: &kio::Consumer<TrackState>, waiter: &kio::Waiter) -> Poll<Option<u64>> {
+		let res = state.poll(waiter, |state| match state.start_pending && state.abort.is_none() {
+			true => Poll::Pending,
+			false => Poll::Ready(state.start_sequence),
+		});
+		match ready!(res) {
+			Ok(start) => Poll::Ready(start),
+			Err(state) => Poll::Ready(state.start_sequence),
 		}
 	}
 
@@ -2558,20 +2624,29 @@ impl Consumer {
 		}
 	}
 
-	/// Where the first servable group in `from..cap` starts, with enough identity to
-	/// revalidate it later. A splice answers from the first segment holding one.
-	pub(crate) fn served_start(&self, from: u64, cap: Option<u64>) -> Option<Successor> {
+	/// Where the first servable group in `from..cap` starts presenting: `None` while no
+	/// such group is cached, `Some(None)` while it has no frame yet. Registers `waiter`
+	/// for whatever could move that answer: a group arriving or leaving, or the unstamped
+	/// one's first frame. A splice answers from the first segment holding one.
+	pub(crate) fn poll_first_start(
+		&self,
+		waiter: &kio::Waiter,
+		from: u64,
+		cap: Option<u64>,
+	) -> Option<Option<Timestamp>> {
 		match &self.inner {
 			ConsumerKind::Plain(state) => {
-				let served = state.read().served_start(from, cap)?;
-				Some(Successor {
-					sequence: served.sequence,
-					timestamp: served.timestamp,
-					stamp: served.stamp,
-					track: state.weak(),
-				})
+				let mut start = None;
+				let _ = state.poll(waiter, |state| {
+					start = state.first_servable(from, cap).map(|group| {
+						let _ = group.poll_timestamp(waiter);
+						group.timestamp()
+					});
+					Poll::<()>::Pending
+				});
+				start
 			}
-			ConsumerKind::Spliced(resume) => resume.served_start(from, cap),
+			ConsumerKind::Spliced(resume) => resume.poll_first_start(waiter, from, cap),
 		}
 	}
 
@@ -3185,8 +3260,8 @@ enum SubscriberKind {
 
 /// One poll's view of how far this subscription may drift: the clamped budget and the
 /// live edge to measure a candidate group against. Resolved once, then applied to every
-/// group that poll considers. `outer` and `successor` are revalidated per candidate,
-/// outside this track's lock.
+/// group that poll considers. `outer` is revalidated and `successor` resolved per
+/// candidate, outside this track's lock.
 #[derive(Clone)]
 struct Drift {
 	budget: Duration,
@@ -3229,7 +3304,10 @@ impl group::Expiry for GroupExpiry {
 			.edge
 			.filter(LiveEdge::is_live)
 			.map(|live| (live.sequence, live.timestamp));
-		let successor = anchor.successor.as_ref().and_then(Successor::start);
+		let successor = anchor
+			.successor
+			.as_ref()
+			.and_then(|successor| successor.poll_start(waiter));
 
 		let mut expired = false;
 		let _ = self.state.poll(waiter, |state| {
@@ -3318,8 +3396,8 @@ pub(crate) struct Anchor {
 	/// Where the reader's next group past `cap` starts presenting, when another track
 	/// serves it (a splice's next segment). The last group below the cap has no
 	/// successor in its own track, so without this nothing bounds its reach and it is
-	/// never judged stale. `None` while unknown or unstamped. Revalidated like `edge`:
-	/// a cached start must not convict once that group is gone.
+	/// never judged stale. Resolved afresh on every judgment rather than cached, so a
+	/// group that goes away hands the bound to whichever group serves there next.
 	pub successor: Option<Successor>,
 }
 
@@ -3357,48 +3435,6 @@ impl LiveEdge {
 }
 
 impl PartialEq for LiveEdge {
-	fn eq(&self, other: &Self) -> bool {
-		self.sequence == other.sequence
-			&& self.timestamp == other.timestamp
-			&& self.stamp == other.stamp
-			&& self.track.same_channel(&other.track)
-	}
-}
-
-/// The first servable group past a segment boundary: where it starts, and which slot
-/// that start was read from.
-struct ServedStart {
-	sequence: u64,
-	stamp: u32,
-	timestamp: Timestamp,
-}
-
-/// A successor pushed onto another track's cursor. The timestamp alone is not enough:
-/// once the group is evicted, a later group can keep the outer edge valid while this
-/// start is no longer where the track continues.
-#[derive(Clone)]
-pub(crate) struct Successor {
-	sequence: u64,
-	timestamp: Timestamp,
-	stamp: u32,
-	track: kio::ConsumerWeak<TrackState>,
-}
-
-impl Successor {
-	/// The start this still names, re-read from its own track, or `None` once that
-	/// group is gone or no longer stamped. Takes that track's lock, so never call it
-	/// under another's.
-	fn start(&self) -> Option<Timestamp> {
-		let state = self.track.read();
-		let slot = state.lookup.get(&self.sequence)?;
-		if slot.stamp != self.stamp || slot.group.is_aborted() {
-			return None;
-		}
-		slot.group.timestamp()
-	}
-}
-
-impl PartialEq for Successor {
 	fn eq(&self, other: &Self) -> bool {
 		self.sequence == other.sequence
 			&& self.timestamp == other.timestamp
@@ -3546,7 +3582,10 @@ impl PlainSubscriber {
 			.as_ref()
 			.filter(|live| live.is_live())
 			.map(|live| (live.sequence, live.timestamp));
-		let successor = drift.successor.as_ref().and_then(Successor::start);
+		let successor = drift
+			.successor
+			.as_ref()
+			.and_then(|successor| successor.poll_start(waiter));
 		let presentation = drift.edge.presentation;
 		let cap = drift.edge.cap;
 		let budget = drift.budget;
@@ -4029,6 +4068,19 @@ impl Subscriber {
 		}
 	}
 
+	/// Poll for where the source's feed starts, raised to this cursor's floor, once
+	/// resolved; see [`Consumer::poll_start`]. A feed starting below the floor serves the
+	/// floor's group too. `None` when the source declares none.
+	pub(crate) fn poll_start(&mut self, waiter: &kio::Waiter) -> Poll<Option<u64>> {
+		match &mut self.inner {
+			SubscriberKind::Plain(plain) => {
+				let start = ready!(Consumer::poll_state_start(&plain.state, waiter));
+				Poll::Ready(start.map(|start| start.max(plain.min_sequence)))
+			}
+			SubscriberKind::Spliced(spliced) => spliced.poll_start(waiter),
+		}
+	}
+
 	/// Poll for the track's declared final sequence, without blocking.
 	pub fn poll_finished(&mut self, waiter: &kio::Waiter) -> Poll<Result<u64>> {
 		match &mut self.inner {
@@ -4200,8 +4252,9 @@ impl Ordered {
 	/// the cap rises or is removed.
 	///
 	/// Returns `Poll::Ready(Ok(Some(group)))` when a group is available,
-	/// `Poll::Ready(Ok(None))` when the track is finished,
-	/// `Poll::Ready(Err(e))` when the track has been aborted, or
+	/// `Poll::Ready(Ok(None))` when the track is finished (including an abort after its
+	/// declared end settled, see [`Producer::abort`]),
+	/// `Poll::Ready(Err(e))` when the track has been aborted short of its end, or
 	/// `Poll::Pending` when no group is available yet.
 	pub fn poll_next_group(&mut self, waiter: &kio::Waiter) -> Poll<Result<Option<group::Consumer>>> {
 		self.inner.poll_next_group(waiter)
@@ -6450,47 +6503,6 @@ mod test {
 		open.finish().unwrap();
 	}
 
-	/// A pushed successor is the same kind of cached fact. Evicting it must not keep
-	/// bounding the previous segment's last group while a later group still anchors the
-	/// outer edge.
-	#[tokio::test]
-	async fn an_evicted_successor_convicts_nothing() {
-		let producer = track_producer("a", None);
-		let mut subscriber = producer.subscribe(Subscription::default().with_max_age(Duration::from_secs(1)));
-		let mut open = producer.append_group().unwrap();
-		open.write_frame(Timestamp::ZERO, bytes::Bytes::from_static(b"a"))
-			.unwrap();
-		let mut group = subscriber.recv_group().await.unwrap().expect("group");
-		assert!(group.read_frame().await.unwrap().is_some());
-
-		let mut next = track_producer("b", None);
-		// Early enough that group 0 is already past the budget, and not itself the edge.
-		let successor = append_at(&mut next, 10);
-		append_at(&mut next, 30_000);
-		let consumer = next.consume();
-		subscriber.set_anchor(Anchor {
-			cap: None,
-			edge: consumer.live_edge(None),
-			successor: consumer.served_start(successor, None),
-		});
-
-		let mut control = group.clone();
-		assert!(
-			matches!(control.read_frame().now_or_never(), Some(Ok(None))),
-			"the open group ends against the successor"
-		);
-
-		let slot = next.modify().unwrap().lookup.remove(&successor).unwrap();
-		let _ = slot.group.abort(Error::Evicted);
-
-		assert!(
-			group.read_frame().now_or_never().is_none(),
-			"a vanished successor is no reason to drop what is left"
-		);
-		assert!(!group.latency_expired());
-		open.finish().unwrap();
-	}
-
 	#[tokio::test]
 	async fn a_lower_sequence_is_never_the_live_edge() {
 		let producer = track_producer("test", None);
@@ -6755,25 +6767,21 @@ mod test {
 	}
 
 	#[tokio::test]
-	async fn abort_clears_cached_groups() {
+	async fn abort_drops_open_groups() {
 		let producer = track_producer("test", None);
 		producer.append_group().unwrap();
 		producer.append_group().unwrap();
 
-		// A stale consumer that never drains must not pin the cached groups.
 		let mut consumer = producer.subscribe(None);
 		assert_eq!(live_groups(&producer.state.read()), 2);
 
 		producer.clone().abort(Error::Cancel).unwrap();
 
-		{
-			let state = producer.state.read();
-			assert!(state.lookup.is_empty(), "cached groups should be dropped on abort");
-			assert!(state.arrival.is_empty());
-			assert!(state.evict.is_empty());
-		}
-
-		// The consumer now surfaces the abort error rather than the leftover cache.
+		// Nobody will finish them, so they leave the cache rather than park a reader.
+		assert!(
+			producer.state.read().lookup.is_empty(),
+			"open groups are dropped on abort"
+		);
 		let result = consumer.recv_group().now_or_never().expect("should not block");
 		assert!(matches!(result, Err(Error::Cancel)));
 	}
@@ -6998,6 +7006,207 @@ mod test {
 			.expect("should not block")
 			.expect("would have errored");
 		assert!(done.is_none(), "track completes once the boundary is reached");
+	}
+
+	/// An abort before the declared end settled wins over it: the boundary was reached,
+	/// but a group below it was still open, so the track was cut off rather than ended.
+	#[tokio::test]
+	async fn abort_before_the_end_settles_wins() {
+		let mut producer = track_producer("test", None);
+		let mut consumer = producer.subscribe(None);
+
+		let head = producer.create_group(group::Info { sequence: 0 }).unwrap();
+		head.finish().unwrap();
+		let _tail = producer.create_group(group::Info { sequence: 1 }).unwrap();
+		producer.finish_at(2).unwrap();
+		assert_eq!(consumer.assert_group().sequence, 0);
+
+		producer.abort(Error::Timeout).unwrap();
+		let res = consumer.recv_group().now_or_never().expect("should not block");
+		assert!(matches!(res, Err(Error::Timeout)));
+	}
+
+	/// An abort short of the end keeps the groups that finished for a reader that has not
+	/// pulled them yet: it gets them, then the abort. The open group nobody will finish
+	/// is gone, on both cursors.
+	#[tokio::test]
+	async fn abort_keeps_finished_groups_for_a_slow_reader() {
+		let producer = track_producer("test", None);
+		let mut arrival = producer.subscribe(None);
+		let mut ordered = producer.subscribe(None).ordered();
+
+		for sequence in 0..2 {
+			producer
+				.create_group(group::Info { sequence })
+				.unwrap()
+				.finish()
+				.unwrap();
+		}
+		let _open = producer.create_group(group::Info { sequence: 2 }).unwrap();
+		producer.abort(Error::Timeout).unwrap();
+
+		assert_eq!(arrival.assert_group().sequence, 0);
+		assert_eq!(arrival.assert_group().sequence, 1);
+		let res = arrival.recv_group().now_or_never().expect("should not block");
+		assert!(matches!(res, Err(Error::Timeout)), "expected the abort");
+
+		assert_eq!(drain_ordered(&mut ordered), [0, 1]);
+		let res = ordered
+			.next_group()
+			.now_or_never()
+			.expect("should not block")
+			.map(|group| group.map(|group| group.sequence));
+		assert!(matches!(res, Err(Error::Timeout)), "expected the abort, got {res:?}");
+	}
+
+	/// The last producer dropping without a finish keeps the finished groups the same way.
+	#[tokio::test]
+	async fn dropped_producer_keeps_finished_groups_for_a_slow_reader() {
+		let producer = track_producer("test", None);
+		let mut consumer = producer.subscribe(None);
+		producer
+			.create_group(group::Info { sequence: 0 })
+			.unwrap()
+			.finish()
+			.unwrap();
+		drop(producer);
+
+		assert_eq!(consumer.assert_group().sequence, 0);
+		let res = consumer.recv_group().now_or_never().expect("should not block");
+		assert!(matches!(res, Err(Error::Dropped)), "expected the drop");
+	}
+
+	/// A closed track's groups, its latest included, expire once idle, so a stale
+	/// consumer cannot pin them. A live track's latest stays protected.
+	#[tokio::test]
+	async fn closed_track_expires_its_latest_group() {
+		let pool = cache::Pool::new(cache::Config::default().with_expiry(Duration::from_secs(1)));
+
+		let live = track_producer_pooled("live", pool.clone());
+		live.append_group().unwrap().finish().unwrap();
+
+		let aborted = track_producer_pooled("aborted", pool.clone());
+		aborted.append_group().unwrap().finish().unwrap();
+		let stale_aborted = aborted.consume();
+		aborted.abort(Error::Timeout).unwrap();
+
+		let finished = track_producer_pooled("finished", pool.clone());
+		finished.append_group().unwrap().finish().unwrap();
+		finished.finish().unwrap();
+		let stale_finished = finished.consume();
+		drop(finished);
+
+		// The first pass dates the activity it has not seen yet; the next one expires it.
+		for _ in 0..2 {
+			crate::model::clock::advance(Duration::from_secs(2));
+			pool.sweep();
+		}
+
+		assert!(live.consume().peek_group(0).is_some(), "a live track keeps its latest");
+		assert!(
+			stale_aborted.peek_group(0).is_none(),
+			"an aborted track's latest expired"
+		);
+		assert!(
+			stale_finished.peek_group(0).is_none(),
+			"a sealed track's latest expired"
+		);
+	}
+
+	/// An abort after every group below the declared end finished leaves the end standing.
+	#[tokio::test]
+	async fn abort_after_the_end_settles_ends_clean() {
+		let mut producer = track_producer("test", None);
+		let mut consumer = producer.subscribe(None);
+
+		for sequence in 0..2 {
+			let group = producer.create_group(group::Info { sequence }).unwrap();
+			group.finish().unwrap();
+		}
+		producer.finish_at(2).unwrap();
+		assert_eq!(consumer.assert_group().sequence, 0);
+		assert_eq!(consumer.assert_group().sequence, 1);
+
+		producer.abort(Error::Timeout).unwrap();
+		let res = consumer.recv_group().now_or_never().expect("should not block");
+		assert!(matches!(res, Ok(None)));
+	}
+
+	/// The settled end stands on the ordered cursor too: a reader that starts after the
+	/// abort gets every group below the end, then the clean end, not the abort.
+	#[tokio::test]
+	async fn abort_after_the_end_settles_ends_clean_for_an_ordered_reader() {
+		let mut producer = track_producer("test", None);
+		let mut consumer = producer.subscribe(None).ordered();
+
+		for sequence in 0..2 {
+			let group = producer.create_group(group::Info { sequence }).unwrap();
+			group.finish().unwrap();
+		}
+		producer.finish_at(2).unwrap();
+		producer.abort(Error::Timeout).unwrap();
+
+		assert_eq!(drain_ordered(&mut consumer), [0, 1]);
+		let end = consumer
+			.next_group()
+			.now_or_never()
+			.expect("should not block")
+			.map(|group| group.map(|group| group.sequence));
+		assert!(matches!(end, Ok(None)), "expected the clean end, got {end:?}");
+	}
+
+	/// The settled end stands on the ordered cursor even where it has nothing to read:
+	/// capped below the end, and with a gap below the cap. Parking is not an option on a
+	/// closed track (the channel would turn it into the abort), so these end clean.
+	#[tokio::test]
+	async fn abort_after_the_end_settles_ends_clean_below_the_cap() {
+		let mut producer = track_producer("test", None);
+		let mut consumer = producer.subscribe(None).ordered();
+		for sequence in 0..2 {
+			producer
+				.create_group(group::Info { sequence })
+				.unwrap()
+				.finish()
+				.unwrap();
+		}
+		producer.finish_at(2).unwrap();
+		producer.abort(Error::Timeout).unwrap();
+
+		consumer.set_groups(..1);
+		assert_eq!(drain_ordered(&mut consumer), [0]);
+		let end = consumer
+			.next_group()
+			.now_or_never()
+			.expect("should not block")
+			.map(|group| group.map(|group| group.sequence));
+		assert!(
+			matches!(end, Ok(None)),
+			"capped at the end: expected the clean end, got {end:?}"
+		);
+
+		let mut producer = track_producer("test", None);
+		let mut consumer = producer.subscribe(None).ordered();
+		for sequence in [0, 2] {
+			producer
+				.create_group(group::Info { sequence })
+				.unwrap()
+				.finish()
+				.unwrap();
+		}
+		producer.finish_at(3).unwrap();
+		producer.abort(Error::Timeout).unwrap();
+
+		consumer.set_groups(..2);
+		assert_eq!(drain_ordered(&mut consumer), [0]);
+		let end = consumer
+			.next_group()
+			.now_or_never()
+			.expect("should not block")
+			.map(|group| group.map(|group| group.sequence));
+		assert!(
+			matches!(end, Ok(None)),
+			"gap below the cap: expected the clean end, got {end:?}"
+		);
 	}
 
 	#[tokio::test]
@@ -8258,8 +8467,13 @@ mod test {
 	/// surviving publisher, or an abrupt drop silently behaves like a clean finish.
 	#[tokio::test]
 	async fn teardown_ignores_a_settling_group() {
-		let (mut producer, pool) = pooled_producer(1 << 40);
-		finished_group(&mut producer, 100);
+		let (producer, pool) = pooled_producer(1 << 40);
+		// Open, so only the abrupt teardown releases it.
+		let mut group = producer.append_group().unwrap();
+		group
+			.write_frame(Timestamp::ZERO, bytes::Bytes::from(vec![0u8; 100]))
+			.unwrap();
+		drop(group);
 
 		// Stand in for a concurrent `cache::Track::settle`, mid-upgrade.
 		let settling = producer.state.downgrade().upgrade().expect("open");

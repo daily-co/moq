@@ -16,6 +16,12 @@ same way so the cluster converges instead of flapping. Both wire protocols
 carry it: natively on moq-lite, and via the [cluster extension](/draft/moq-cluster)
 on moq-transport 17+.
 
+When a moq-lite-04 or later peer withdraws its last advertisement for a broadcast, a relay
+drops every other route to it that passed through that peer, since each was
+relayed from what the peer just withdrew, rather than falling back to them one
+by one. During reconnect, another session from that peer can still advertise
+the broadcast; an old session's withdrawal does not invalidate that route.
+
 Failover routes must carry copies of the same broadcast. A relay moves a
 subscription only between sources from the same origin: on moq-lite-07 the one a
 source's SUBSCRIBE\_OK or FETCH\_OK names, otherwise the first hop of its route.
@@ -25,6 +31,18 @@ group ordering. A source with different properties is refused before its groups
 are spliced in. If no compatible source remains, the track fails with
 `Unsupported`. New immutable properties require a new track name or broadcast
 identity.
+
+A route whose original publisher (its first hop) changes is updated in place on
+both wire protocols, so the broadcast never briefly vanishes downstream.
+Subscriptions already in flight keep draining the old publisher until it ends
+and are never spliced onto the new one. New requests resolve through the updated
+route as a fresh broadcast, without the old publisher's track properties.
+
+A publisher whose protocol names no hop (moq-transport without the cluster
+extension, moq-lite 01 through 03, or a peer that sends 0) gets a random first
+hop from the relay it connects to, fresh for each connection, followed by a 0.
+Its reconnect is therefore a new publisher downstream, a reprice on the same
+connection stays in place, and the 0 keeps it ranked as anonymous.
 
 ## Topology
 
@@ -46,12 +64,13 @@ link costs 1, which reproduces plain hop counting. Each relay adds the price of
 the link an announcement arrived on before forwarding it, so a route's cost is
 the sum of what it crossed.
 
-Wildcard advertisements are forwarded and costed the same way as an exact-path
+Prefix advertisements are forwarded and costed the same way as an exact-path
 route: each hop appends its identity, adds the link price, and passes the
-claim on. An advertisement must be contained by one of the publisher's granted
-prefixes (`grant/**`); an over-wide pattern is refused rather than clamped.
+claim on. An advertised prefix must overlap the publisher's grant, or it is
+refused. A prefix wider than the grant is accepted, but it only routes requests
+for paths the grant covers.
 
-Routing prefers the most specific pattern, then a fully identified hop list
+Routing prefers the longest covering prefix, then a fully identified hop list
 over one that holds a 0 (an anonymous hop) at any depth, then the lowest cost,
 then the shortest hop list, then a hash of the requested path and the hop list,
 breaking any remaining tie toward the newest announcement so a reconnecting
@@ -59,8 +78,14 @@ publisher isn't outranked by the session it replaced. Hashing the requested
 path spreads equal-cost advertisers of one prefix, such as a transcode pool,
 across its paths instead of sending every path to one of them, and every relay
 picks the same one for a given path. An assigned identity for an anonymous peer
-is local selection state and is never written into the hop list. Resolving a
-non-prefix pattern into a subscription is not implemented yet.
+is local selection state and is never written into the hop list.
+
+A prefix advertisement is a capability, not an inventory: the publisher refuses
+the paths it cannot serve, and that refusal is final. The relay never retries a
+shorter prefix or another advertiser of the same one, so a transcoder refusing a
+path does not leak it to an archive claiming the root. An advertiser sheds load
+by withdrawing or re-pricing its advertisement before it runs out, leaving
+headroom for requests already in flight.
 
 ```toml
 [cluster]
@@ -114,6 +139,16 @@ mesh = true
 ```
 
 A relay with `node` and `mesh` but no `connect` is a passive rendezvous.
+
+Gossip trusts every node advertised under `.internal/origins/` and dials it
+with `cluster.token`, unless the advertised URL carries its own `?jwt=`. Keep
+client grants off `.internal/`: a client that can publish there can add a peer
+that receives the token.
+
+Give `node` an authenticated TLS scheme (`https://`, `wss://`, `moqt://`, or
+`moql://`). Peers dial that URL with the token, so `ws://` and `tcp://` send it
+in cleartext, and `http://` pins a fingerprint fetched over plain HTTP and
+may fall back to `ws://`.
 
 On a LAN there may be no seed peer to gossip through. `[cluster.lan]` advertises
 this relay over mDNS and dials the peers that advertise back, so a rack or a
@@ -183,7 +218,8 @@ accepting relay admits a peer through the same lease as any client: its
 certificate is reported to the auth server, which grants it, so a mesh needs
 `moq auth serve --mtls-publish '**' --mtls-subscribe '**'` (or a server of
 your own that grants the cluster CA) behind `--auth-url`. A relay on
-`--auth-public '**'` admits peers through that grant instead. LAN peers
+`--auth-public '**'` admits peers through that grant instead, as long as they
+send no `cluster.token`: public rules refuse a token. LAN peers
 authenticate with the mDNS credential on `/.cluster/<credential>`, a secret
 the relay minted for itself and checks locally, and never receive
 `cluster.token`. Dials retry forever with capped backoff, so a rejected peer
