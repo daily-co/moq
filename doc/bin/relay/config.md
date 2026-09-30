@@ -46,9 +46,9 @@ idle_timeout = "30s"                 # Drop a connection after this long with no
 keep_alive = "5s"                    # Ping interval; "0s" disables it. Ignored by iroh.
 gso = true                           # UDP segmentation offload. iroh cannot turn it off.
 mtu_discovery = false                # Path MTU discovery. Default.
-receive_window = 67108864            # Flow-control windows, in bytes. Omit for the backend default.
-stream_receive_window = 8388608
-send_window = 33554432
+receive_window = 67108864            # Whole-connection window, in bytes. Default (64 MiB).
+stream_receive_window = 8388608      # Per-stream window. Omit for the backend default.
+send_window = 33554432               # Unacknowledged outgoing data. Omit for the backend default.
 qlog = "/var/log/moq/qlog"           # Existing directory. Needs the `qlog` build feature.
 ```
 
@@ -57,6 +57,10 @@ uses noq and the same congestion controller.
 
 Raise the receive windows when a fat, long path idles below the link rate: a
 window under the bandwidth-delay product stalls the sender waiting for credit.
+`receive_window` bounds how much unread data one peer can make the relay buffer
+across all of its streams; the transport's own default is unlimited, so it
+defaults to 64 MiB, enough for a relay-to-relay session to carry several Gbps at
+a 100 ms RTT.
 Keep `stream_receive_window` well under `receive_window` so one slow group
 cannot starve the connection. `send_window` caps unacknowledged outgoing data
 whatever the peer allows, bounding the transport send buffer. A zero window is refused, and the receive windows must fit a QUIC
