@@ -243,8 +243,8 @@ JSON, and binary track are recorded alongside. It refuses a rendition served
 from another broadcast, and one that returns after the catalog dropped it. The
 stage ends once the broadcast does, and it refuses a store URL that already
 holds a recording. `--retention 1h` keeps only the last hour (a DVR),
-deleting expired objects `--retention-grace` (default 30s) after the timeline
-stops advertising them.
+deleting expired objects, and timeline objects no longer needed to recover it,
+`--retention-grace` (default 30s) after the timeline stops needing them.
 
 `import archive` republishes a recording: the timeline replays as a live track
 and every other track's groups are served on request, one object GET per group

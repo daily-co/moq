@@ -1,7 +1,7 @@
 //! Recover a recording so a restarted [`Writer`](crate::Writer) continues it.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use futures::TryStreamExt;
 use hang::timeline::Record;
@@ -21,6 +21,11 @@ pub(crate) struct Recovery {
 	pub floors: HashMap<String, u64>,
 	/// Stored group objects no retained record references. Only collected for a DVR.
 	pub orphans: Vec<Key>,
+	/// The timeline objects recovery replayed, oldest first, with the first record index each
+	/// one's opening checkpoint restates. Only collected for a DVR.
+	pub checkpoints: VecDeque<(u64, u64)>,
+	/// Stored timeline segments older than any recovery reads. Only collected for a DVR.
+	pub stale: Range<u64>,
 }
 
 /// List the whole recording, then replay its timeline from a retained checkpoint.
@@ -45,14 +50,14 @@ pub(crate) async fn recover<S: ObjectStore>(store: &Store<S>, timeline: &str, co
 	}
 	segments.sort_unstable();
 
-	let (checkpoint, sequence) = match (segments.first(), segments.last()) {
+	let (checkpoint, sequence, checkpoints) = match (segments.first(), segments.last()) {
 		(Some(&first), Some(&last)) => {
 			if segments.len() as u64 != last - first + 1 {
 				return Err(Error::Timeline(format!(
 					"timeline segments {first}..={last} are not contiguous"
 				)));
 			}
-			let (checkpoint, sequence) = replay(store, timeline, first..=last, complete).await?;
+			let (checkpoint, sequence, checkpoints) = replay(store, timeline, first..=last, complete).await?;
 			// The newest object is segment `last`, so the window must end on the next one.
 			// A shorter window would resume onto that segment and collide with it.
 			let next = last.checked_add(1).ok_or(Error::Overflow)?;
@@ -62,9 +67,9 @@ pub(crate) async fn recover<S: ObjectStore>(store: &Store<S>, timeline: &str, co
 					checkpoint.range.end
 				)));
 			}
-			(Some(checkpoint), sequence)
+			(Some(checkpoint), sequence, checkpoints)
 		}
-		_ => (None, 0),
+		_ => (None, 0, VecDeque::new()),
 	};
 
 	let mut referenced = HashSet::new();
@@ -76,9 +81,14 @@ pub(crate) async fn recover<S: ObjectStore>(store: &Store<S>, timeline: &str, co
 			}
 		}
 	}
-	let orphans = match complete {
-		true => groups.into_iter().filter(|key| !referenced.contains(key)).collect(),
-		false => Vec::new(),
+	let (orphans, checkpoints, stale) = match complete {
+		true => {
+			let orphans = groups.into_iter().filter(|key| !referenced.contains(key)).collect();
+			let first = segments.first().copied().unwrap_or_default();
+			let needed = checkpoints.front().map_or(first, |(segment, _)| *segment);
+			(orphans, checkpoints, first..needed)
+		}
+		false => (Vec::new(), VecDeque::new(), 0..0),
 	};
 
 	Ok(Recovery {
@@ -86,6 +96,8 @@ pub(crate) async fn recover<S: ObjectStore>(store: &Store<S>, timeline: &str, co
 		sequence,
 		floors,
 		orphans,
+		checkpoints,
+		stale,
 	})
 }
 
@@ -96,22 +108,25 @@ fn raise(floors: &mut HashMap<String, u64>, track: &str, group: u64) {
 
 /// Replay `segments` from the newest checkpoint that restates every record `complete` needs.
 ///
-/// Returns the retained window and the next timeline group sequence.
+/// Returns the retained window, the next timeline group sequence, and each replayed segment with
+/// its checkpoint's first restated index.
 async fn replay<S: ObjectStore>(
 	store: &Store<S>,
 	timeline: &str,
 	segments: RangeInclusive<u64>,
 	complete: bool,
-) -> Result<(Checkpoint<Record>, u64)> {
+) -> Result<(Checkpoint<Record>, u64, VecDeque<(u64, u64)>)> {
 	// Every object opens with a checkpoint. The newest one's offset bounds what is still retained,
-	// so walk back until a checkpoint restates from there.
+	// so walk back until a checkpoint restates from there. The writer prunes by the same rule.
 	let mut objects = VecDeque::new();
+	let mut checkpoints = VecDeque::new();
 	let mut needed = None;
 	for segment in segments.rev() {
 		let object = store.get_segments(timeline, segment).await?;
 		let (offset, start) = checkpoint(&object)?;
 		let needed = *needed.get_or_insert(offset);
 		objects.push_front(object);
+		checkpoints.push_front((segment, start));
 		if !complete || start <= needed {
 			break;
 		}
@@ -156,11 +171,11 @@ async fn replay<S: ObjectStore>(
 		range,
 		records: records.into_values().collect(),
 	};
-	Ok((checkpoint, sequence))
+	Ok((checkpoint, sequence, checkpoints))
 }
 
 /// The retained offset and first restated index of the checkpoint opening `object`.
-fn checkpoint(object: &Object) -> Result<(u64, u64)> {
+pub(crate) fn checkpoint(object: &Object) -> Result<(u64, u64)> {
 	let frame = object
 		.groups
 		.first()
