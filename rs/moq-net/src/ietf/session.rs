@@ -1,3 +1,13 @@
+use std::{
+	future::Future,
+	pin::Pin,
+	sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	},
+	task::{Context, Poll},
+};
+
 use crate::origin;
 use crate::{
 	Error, Hop, SessionError, StreamError,
@@ -67,7 +77,28 @@ pub struct Config<S: crate::transport::poll::Session> {
 	pub peer_declared: Option<peer::Peer>,
 }
 
-pub fn start<S>(config: Config<S>) -> Result<(MaybeSendBox<'static, Result<(), Error>>, crate::goaway::Handle), Error>
+/// Runs the IETF protocol and tracks the data owed to its peer.
+pub struct Driver {
+	run: MaybeSendBox<'static, Result<(), Error>>,
+	owed: Arc<AtomicUsize>,
+}
+
+impl Driver {
+	/// Whether no dispatched subscription or fetch still owes the peer data.
+	pub fn drained(&self) -> bool {
+		self.owed.load(Ordering::Relaxed) == 0
+	}
+}
+
+impl Future for Driver {
+	type Output = Result<(), Error>;
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+		self.run.as_mut().poll(cx)
+	}
+}
+
+pub fn start<S>(config: Config<S>) -> Result<(Driver, crate::goaway::Handle), Error>
 where
 	S: crate::transport::poll::Boxable,
 {
@@ -94,6 +125,8 @@ where
 	// server to open connections (draft-19 sect 10.4).
 	let (goaway_handle, goaway) = crate::goaway::Handle::new(!client);
 
+	let owed = Arc::new(AtomicUsize::new(0));
+	let serving = owed.clone();
 	let driver = async move {
 		// Our own Hop ID, taken from whichever origin the caller actually supplied so
 		// every session out of this process stamps the same one and cross-session loop
@@ -132,7 +165,7 @@ where
 				let control = Control::new(request_id_max, client);
 				let adapter = ControlStreamAdapter::new(session.clone(), control.clone(), version);
 
-				let publisher = Publisher::new(
+				let mut publisher = Publisher::new(
 					runtime.clone(),
 					adapter.clone(),
 					publish,
@@ -141,6 +174,7 @@ where
 					peer_setup.clone(),
 					version,
 				);
+				publisher.owed = serving.clone();
 				let (tasks, mut task_set) = TaskSet::new();
 				let subscriber = Subscriber::new(
 					runtime.clone(),
@@ -293,7 +327,7 @@ where
 				};
 
 				let control = Control::new(None, client);
-				let publisher = Publisher::new(
+				let mut publisher = Publisher::new(
 					runtime.clone(),
 					session.clone(),
 					publish,
@@ -302,6 +336,7 @@ where
 					peer_setup.clone(),
 					version,
 				);
+				publisher.owed = serving.clone();
 				let (tasks, mut task_set) = TaskSet::new();
 				let subscriber = Subscriber::new(
 					runtime.clone(),
@@ -438,7 +473,7 @@ where
 	}
 	.maybe_boxed();
 
-	Ok((driver, goaway_handle))
+	Ok((Driver { run: driver, owed }, goaway_handle))
 }
 
 /// What a peer's SETUP told us, beyond the stream it arrived on.

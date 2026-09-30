@@ -34,7 +34,7 @@ pub struct Driver<S: crate::transport::poll::Session> {
 pub(crate) enum Protocol<S: crate::transport::poll::Session> {
 	/// Boxed for size only: a concrete box, so `Send` stays inferred.
 	Lite(Box<crate::lite::Driver<S>>),
-	Ietf(crate::util::MaybeSendBox<'static, Result<(), Error>>),
+	Ietf(crate::ietf::Driver),
 }
 
 /// Protocol and lifecycle work owned by the driver.
@@ -74,16 +74,16 @@ impl<S: crate::transport::poll::Session> Protocol<S> {
 	fn poll(&mut self, waiter: &kio::Waiter) -> Poll<Result<(), Error>> {
 		match self {
 			Self::Lite(driver) => driver.poll(waiter),
-			Self::Ietf(driver) => waiter.poll_future(driver.as_mut()),
+			Self::Ietf(driver) => waiter.poll_future(std::pin::Pin::new(driver)),
 		}
 	}
 
 	/// Whether the protocol owes the peer no queued data, so a draining close can
-	/// proceed. The IETF driver does not track this and closes at once.
+	/// proceed.
 	fn drained(&self) -> bool {
 		match self {
 			Self::Lite(driver) => driver.drained(),
-			Self::Ietf(_) => true,
+			Self::Ietf(driver) => driver.drained(),
 		}
 	}
 }

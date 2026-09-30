@@ -62,8 +62,8 @@ Dropping the last session handle requests closure on the next poll, and
 peer has not acknowledged yet. `session.close().await` first waits, up to one
 second, for finished tracks to deliver their last groups and FIN, returning
 `Error::Timeout` if it gave up. Finish or abort live tracks before calling it.
-moq-transport (IETF) sessions close without waiting. Dropping the driver
-cancels the session. `moq-tokio` and `moq-wasm` drive sessions for their
+This drain applies to both moq-lite and moq-transport (IETF). Dropping the
+driver cancels the session. `moq-tokio` and `moq-wasm` drive sessions for their
 callers.
 
 `origin::Producer::new` returns a driver with the same `time::Driver`

@@ -169,7 +169,7 @@ impl Session {
 	/// the session's terminal error if it ended some other way first. A track that
 	/// is still live never finishes, so finish or abort tracks before closing.
 	///
-	/// moq-transport (IETF) sessions close without waiting.
+	/// Both moq-lite and moq-transport (IETF) drain before closing.
 	pub async fn close(self) -> Result<(), Error> {
 		if let Ok(mut close) = self.close.write()
 			&& close.is_none()
