@@ -43,7 +43,7 @@ use moq_nvenc::sys::nvEncodeAPI::{
 use moq_nvenc::{Encoder, EncoderInitParams, Session};
 
 use super::super::encoder::{Codec, Config, Gop};
-use super::{Backend, Encoded};
+use super::{Backend, Encoded, keyframe_annexb};
 use crate::frame::{Surface, interleave_uv};
 use crate::{Color, Error, Frame};
 
@@ -63,6 +63,7 @@ pub(crate) struct Nvenc {
 	// Keep the CUDA context alive for as long as the session uses it.
 	_cuda: Arc<CudaContext>,
 	timestamp: u64,
+	codec: Codec,
 }
 
 impl Nvenc {
@@ -205,6 +206,7 @@ impl Nvenc {
 			session,
 			_cuda: cuda,
 			timestamp: 0,
+			codec: config.codec,
 		}))
 	}
 }
@@ -293,7 +295,9 @@ impl Backend for Nvenc {
 		Ok(if data.is_empty() {
 			Vec::new()
 		} else {
-			vec![Encoded::new(Bytes::from(data), frame.timestamp)]
+			// moq-nvenc hands back only the bytes, not the picture type it locked them with.
+			let keyframe = keyframe_annexb(self.codec, &data);
+			vec![Encoded::new(Bytes::from(data), frame.timestamp, keyframe)]
 		})
 	}
 
@@ -479,6 +483,35 @@ mod tests {
 		assert!(types.contains(&5), "forced keyframe is not an IDR: {types:?}");
 		assert!(types.contains(&7), "forced IDR is missing inline SPS: {types:?}");
 		assert!(types.contains(&8), "forced IDR is missing inline PPS: {types:?}");
+	}
+
+	/// A refused retune leaves the session encoding at its last accepted rate,
+	/// and a later retune is accepted by the real driver. Same skip rule as the
+	/// H.264 test.
+	#[test]
+	fn nvenc_refused_retune_keeps_encoding() {
+		if !driver_available() {
+			return;
+		}
+		let mut config = crate::encode::Config::new(320, 240, crate::Rate::new(30, 1).unwrap());
+		config.kind = crate::encode::Kind::Named(NAME.into());
+		config.bitrate = Some(moq_net::bandwidth::Rate::from_bps(1_000_000));
+		let Ok(mut encoder) = crate::encode::Encoder::new(&config) else {
+			return;
+		};
+
+		let frame = gray_rgba(320, 240);
+		assert!(!encoder.encode(&gray_frame(&frame, 0)).unwrap().is_empty());
+		encoder
+			.set_bitrate(moq_net::bandwidth::Rate::ZERO)
+			.expect_err("a zero rate must be refused");
+		assert_eq!(encoder.bitrate(), moq_net::bandwidth::Rate::from_bps(1_000_000));
+		encoder
+			.set_bitrate(moq_net::bandwidth::Rate::from_bps(500_000))
+			.unwrap();
+		for i in 1..5 {
+			assert!(!encoder.encode(&gray_frame(&frame, i)).unwrap().is_empty());
+		}
 	}
 
 	/// Real-hardware H.265 encode through NVENC. Same skip rule as the H.264 test.

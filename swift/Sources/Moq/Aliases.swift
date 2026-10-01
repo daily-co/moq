@@ -52,7 +52,7 @@ public typealias VideoDecodedFrame = MoqVideoDecodedFrame
 public typealias AudioDecoderOutput = MoqFFI.MoqAudioDecoderOutput
 /// A raw PCM sample format, mirroring WebCodecs `AudioData.format`.
 public typealias AudioSampleFormat = MoqFFI.MoqAudioSampleFormat
-/// Selects the audio encoder codec. Build one with `AudioCodec.opus()`.
+/// Selects the audio encoder codec. Build one with `AudioCodec.opus()` or `AudioCodec.aac()`.
 public typealias AudioCodec = MoqFFI.MoqAudioCodec
 /// One raw video frame: pixels in the configured layout plus a presentation
 /// timestamp.
@@ -79,6 +79,14 @@ public typealias Datagram = MoqFFI.MoqDatagram
 /// and the advertised costs: warm `cost`, lower wins, plus undiscounted `cold`
 /// (`nil` means the same as `cost`).
 public typealias Route = MoqFFI.MoqRoute
+/// A route over a prefix: the origin-relative `prefix`, what each filter
+/// wildcard matched (`captures`, `nil` for a partial overlap), and the `route`
+/// serving it. Resolve a path with `OriginConsumer.requestBroadcast`.
+public typealias Announce = MoqFFI.MoqAnnounce
+/// What an `AnnounceConsumer` yields: `.start`, `.update`, or `.end`
+/// carrying an `Announce`, or `.live` once every route live at subscribe time
+/// has been delivered.
+public typealias AnnounceEvent = MoqFFI.MoqAnnounceEvent
 /// Per-subscription delivery preferences: priority, group ordering, latency
 /// budget, and group range.
 public typealias Subscription = MoqFFI.MoqSubscription

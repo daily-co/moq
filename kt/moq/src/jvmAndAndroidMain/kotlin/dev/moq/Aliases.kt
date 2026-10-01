@@ -29,14 +29,29 @@ typealias OriginConsumer = uniffi.moq.MoqOriginConsumer
 typealias OriginDynamic = uniffi.moq.MoqOriginDynamic
 /** A requested broadcast not yet accepted: fulfill it with a producer or reject it. */
 typealias BroadcastRequest = uniffi.moq.MoqBroadcastRequest
-/** A stream of route announcements and retractions under a prefix. */
+/** A stream of announce events under a prefix. */
 typealias AnnounceConsumer = uniffi.moq.MoqAnnounceConsumer
 /** A literal prefix, an optional relative pattern, and the hidden-path opt-in for announcement discovery. */
 typealias AnnounceConfig = uniffi.moq.MoqAnnounceConfig
 /** A pending wait for a route to cover a specific path. */
 typealias AnnouncedBroadcast = uniffi.moq.MoqAnnouncedBroadcast
-/** A single route announcement or retraction: its path, route metadata, and active flag. */
-typealias AnnounceUpdate = uniffi.moq.MoqAnnounceUpdate
+/** A route over a prefix: its origin-relative path, wildcard captures, and route metadata. */
+typealias Announce = uniffi.moq.MoqAnnounce
+/**
+ * What an [AnnounceConsumer] yields: [AnnounceEventStart], [AnnounceEventUpdate],
+ * [AnnounceEventEnd], or [AnnounceEventLive].
+ */
+typealias AnnounceEvent = uniffi.moq.MoqAnnounceEvent
+// Kotlin cannot reach a sealed class's subtypes through its typealias, so each
+// variant gets its own.
+/** A route now covers the prefix; the stream had none there. */
+typealias AnnounceEventStart = uniffi.moq.MoqAnnounceEvent.Start
+/** The route covering the prefix changed hops or cost. */
+typealias AnnounceEventUpdate = uniffi.moq.MoqAnnounceEvent.Update
+/** No route covers the prefix any more; carries its last route. */
+typealias AnnounceEventEnd = uniffi.moq.MoqAnnounceEvent.End
+/** Every route live at subscribe time has been delivered; what follows is live changes. */
+typealias AnnounceEventLive = uniffi.moq.MoqAnnounceEvent.Live
 // Broadcast / track / group producers and consumers.
 /** The write side of a broadcast: publish tracks into it. */
 typealias BroadcastProducer = uniffi.moq.MoqBroadcastProducer
@@ -62,7 +77,7 @@ typealias GroupProducer = uniffi.moq.MoqGroupProducer
 typealias GroupConsumer = uniffi.moq.MoqGroupConsumer
 
 // Media (codec-aware) producers and consumers.
-/** The write side of a media track fed pre-framed payloads. */
+/** The write side of a media track; discontinuity() marks a break between pre-framed payloads. */
 typealias MediaProducer = uniffi.moq.MoqMediaProducer
 /** The write side of a media track fed a raw byte stream, with frame boundaries inferred. */
 typealias MediaStreamProducer = uniffi.moq.MoqMediaStreamProducer
@@ -134,13 +149,13 @@ typealias FetchGroupOptions = uniffi.moq.MoqFetchGroupOptions
 typealias TrackInfo = uniffi.moq.MoqTrackInfo
 /** One audio frame: PCM payload bytes plus a presentation timestamp. */
 typealias AudioFrame = uniffi.moq.MoqAudioFrame
-/** Selects the audio encoder codec. Build one with `AudioCodec.opus()`. */
+/** Selects the audio encoder codec. Build one with `AudioCodec.opus()` or `AudioCodec.aac()`. */
 typealias AudioCodec = uniffi.moq.MoqAudioCodec
 /** A raw PCM sample format, mirroring WebCodecs `AudioData.format`. */
 typealias AudioSampleFormat = uniffi.moq.MoqAudioSampleFormat
 /** The PCM layout an [AudioConsumer] should decode to. */
 typealias AudioDecoderOutput = uniffi.moq.MoqAudioDecoderOutput
-/** What a [VideoConsumer] decodes to: an optional resize, a latency budget, and whether frames keep the decoder's native surface. */
+/** What a [VideoConsumer] decodes to: an optional resize, a latency budget, and whether frames keep the decoder's surface (macOS only; refused elsewhere). */
 typealias VideoDecoderOutput = uniffi.moq.MoqVideoDecoderOutput
 /** One decoded video frame, owning the decoder's surface until closed; `pixels(format)` converts it to packed CPU pixels. */
 typealias VideoDecodedFrame = uniffi.moq.MoqVideoDecodedFrame

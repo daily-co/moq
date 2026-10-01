@@ -77,8 +77,8 @@ io_uring = false                     # Drive them with io_uring instead of tokio
 ```
 
 Packets are steered by connection ID, so a client that migrates stays with its
-worker. The group shares one port, including an ephemeral (zero) port: the
-first worker binds it and the rest join that port. Use an explicit port unless
+worker. The group shares one port, including an ephemeral (zero) port, which is
+resolved once and joined by every worker. Use an explicit port unless
 something reads the bound address at startup. `workers` needs the `noq`
 feature and real certificate files rather than `tls.generate`. A build without
 QUIC rejects `workers` instead of
@@ -90,7 +90,10 @@ and refuses to start anywhere it cannot deliver. `[quic]` applies either way,
 except that `mtu_discovery` (its datagram path sends a fixed payload) and the
 three flow-control windows (these workers run fixed ones) are refused under
 `io_uring` rather than quietly ignored. Each worker reports its own counters at
-[`/metrics`](/bin/relay/http#get-metrics).
+[`/metrics`](/bin/relay/http#get-metrics). The kernel charges each worker's
+ring (~56 KiB, plus a page per socket) to `RLIMIT_MEMLOCK`, a budget shared by
+every io\_uring the user runs; raise it (`LimitMEMLOCK=` under systemd) if
+workers fail to start with a message naming that limit.
 
 ## \[web]
 
@@ -116,7 +119,7 @@ See [HTTP endpoints](/bin/relay/http).
 # Exactly one of these:
 url = "http://127.0.0.1:4440/"       # An auth server asked once per session event (`moq auth serve`,
                                      # or your own). https:// presents connect.tls; unix:// is a socket.
-# public = "anon/**"                 # Or a static anonymous grant, publish and subscribe alike.
+# public = "anon/**"                 # Or a static anonymous grant rooted at /, publish and subscribe alike.
 # public_subscribe = ["anon/**", "demo/**"]   # Or split them; patterns, `foo/**` for a subtree.
 # public_publish = ["anon/**"]
 ```
@@ -129,7 +132,6 @@ See [Authentication](/bin/relay/auth).
 [cluster]
 connect = ["https://us-east.example.com/?cost=10"]   # Peers to dial. ?cost prices the link, or use {url, cost, egress, token} objects.
 node = "https://us-west.example.com/"                 # This relay's own URL.
-mesh = true                                           # Gossip: peers discover and dial `node`.
 connect_api = "https://api.example.com/peers"        # Or fetch the peer list (JSON array of URLs and/or objects) live.
 token = "cluster.jwt"                                 # JWT for dials without an inline ?jwt=.
 id = 12345                                            # Stable Hop ID across restarts.
