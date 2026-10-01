@@ -47,7 +47,6 @@ link-state and existence-split design planned earlier that day:
   [Remove `--hop`](/quest/m1/hop-removal.md) and
   [One route cost](/quest/m1/route-cost.md).
 - Cluster links are moq-lite only; moq-transport peers are plain clients
-  ([moq-transport peers are plain clients](/quest/m1/ietf-cluster-off.md)).
 - An epoch-qualified concrete path (`foo/@<uuidv7>`) is a source's identity:
   origins that announce the same one are interchangeable, which is how a
   redundant pair is expressed. A path a claim produces keeps Wildcard's

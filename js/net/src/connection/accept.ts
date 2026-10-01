@@ -114,7 +114,7 @@ async function acceptAlpn(
 	version: Ietf.IetfVersion,
 	wiring: SessionProps,
 ): Promise<Established> {
-	const { control, solicit, hidden, cluster } = await exchangeSetup(transport, version, "moq-lite-js");
+	const { control, solicit, hidden } = await exchangeSetup(transport, version, "moq-lite-js");
 
 	return new Ietf.Connection({
 		...wiring,
@@ -124,7 +124,6 @@ async function acceptAlpn(
 		control,
 		solicit,
 		hidden,
-		cluster,
 		// v17+ uses NativeSession which manages its own request IDs; maxRequestId is unused.
 		maxRequestId: 0n,
 		version,

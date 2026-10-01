@@ -1,4 +1,3 @@
-import { type Hop, randomHop } from "../hop.ts";
 import * as Ietf from "../ietf/index.ts";
 import { Reader, Stream, Writer } from "../stream.ts";
 
@@ -8,28 +7,19 @@ import { Reader, Stream, Writer } from "../stream.ts";
  * halves run in parallel and the protocol is symmetric, so both `connect`
  * (client) and `accept` (server) use this same function.
  *
- * Returns the control stream plus what the peer's SETUP declared: whether it requires
- * solicitation, which decides whether we announce namespaces unprompted (see the MoQ Solicit
- * extension), and its Hop ID (see the MoQ Cluster extension). We declare both ourselves on
- * every session: we send SUBSCRIBE_NAMESPACE for each prefix we want, so an unsolicited
- * advertisement can tell us nothing we won't have asked for, and a peer that knows our Hop
- * ID can withhold the advertisements that already flowed through us.
+ * Returns the control stream and the peer's solicitation and hidden-namespace options.
+ * Cluster options remain unnegotiated; moq-transport peers are plain clients.
  */
 export async function exchangeSetup(
 	transport: WebTransport,
 	version: Ietf.IetfVersion,
 	implementation: string,
-): Promise<{ control: Stream; solicit: boolean | undefined; hidden: boolean; cluster: Ietf.Cluster.Hops }> {
+): Promise<{ control: Stream; solicit: boolean | undefined; hidden: boolean }> {
 	const encoder = new TextEncoder();
 	const params = new Ietf.SetupOptions();
 	params.setBytes(Ietf.SetupOption.Implementation, encoder.encode(implementation));
 	Ietf.solicitIntoSetup(params);
 	Ietf.hiddenIntoSetup(params);
-
-	// One id per session, like the moq-lite connection: nothing in this process forwards
-	// between sessions, so there is nothing for a shared id to detect.
-	const self = randomHop();
-	Ietf.Cluster.intoSetup(params, self, version);
 
 	const setupMsg = new Ietf.Setup({ parameters: params });
 
@@ -42,7 +32,6 @@ export async function exchangeSetup(
 		control: new Stream({ writer, reader: received.reader }),
 		solicit: received.solicit,
 		hidden: received.hidden,
-		cluster: { self, peer: received.cluster },
 	};
 }
 
@@ -58,7 +47,7 @@ async function sendSetup(transport: WebTransport, version: Ietf.IetfVersion, set
 async function receiveSetup(
 	transport: WebTransport,
 	version: Ietf.IetfVersion,
-): Promise<{ reader: Reader; solicit: boolean | undefined; hidden: boolean; cluster: Hop | undefined }> {
+): Promise<{ reader: Reader; solicit: boolean | undefined; hidden: boolean }> {
 	const uniReader = transport.incomingUnidirectionalStreams.getReader() as ReadableStreamDefaultReader<
 		ReadableStream<Uint8Array>
 	>;
@@ -78,6 +67,5 @@ async function receiveSetup(
 		reader,
 		solicit: Ietf.solicitFromSetup(setup.parameters),
 		hidden: Ietf.hiddenFromSetup(setup.parameters),
-		cluster: Ietf.Cluster.fromSetup(setup.parameters, version),
 	};
 }

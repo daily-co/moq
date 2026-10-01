@@ -89,8 +89,7 @@ impl Client {
 		self
 	}
 
-	/// Price this link, in the units the rest of the mesh uses (moq-lite-06+, and
-	/// `moqt-17`+ via the MoQ Cluster extension).
+	/// Price this link in the units the rest of the mesh uses.
 	///
 	/// The dialer is the side that knows what a link costs, because it chose the peer:
 	/// use `0` for a sibling in the same datacenter and something large for another
@@ -98,7 +97,8 @@ impl Client {
 	/// the route cost of every announcement the peer sends us, and declare it in our
 	/// SETUP so the peer adds it to every announcement we send, which is what a server
 	/// accepting an anonymous connection needs: it cannot tell a sibling from a
-	/// stranger, so it has no price of its own to apply.
+	/// stranger, so it has no price of its own to apply. moq-transport charges the
+	/// price locally without declaring it to the plain client.
 	///
 	/// A price the peer declares applies only where we set none. An unpriced link costs
 	/// `1`, which makes the cost track the hop count and so reproduces plain
@@ -111,20 +111,10 @@ impl Client {
 	/// Assign an origin (hop) id to the peer, used whenever the peer doesn't declare
 	/// one itself.
 	///
-	/// Some relays never declare their identity: moq-lite peers without the hops
-	/// extension, and moq-transport peers that don't negotiate the MoQ Cluster
-	/// extension (or predate it, on `moqt-16` and earlier).
-	/// Broadcasts received from such a peer are normally attributed to the reserved
-	/// Hop ID 0 ("unknown"), which identifies nothing: it never proves continuity,
-	/// so their advertisements neither splice nor survive a restart in place. This
-	/// knob pins a real identity instead, exactly as if the peer had declared it:
-	///
-	/// - broadcasts received from the peer carry `origin` in their hop chains, so
-	///   every session dialing the same relay (with the same id) resolves to one
-	///   route and loop checks can recognize it;
-	/// - broadcasts whose hop chain already contains `origin` are neither announced
-	///   nor served back to the peer, preventing an echo through a relay that does
-	///   no loop detection of its own.
+	/// moq-lite peers without the hops extension and all moq-transport peers carry no
+	/// publisher identity. Each connection stamps their anonymous broadcasts freshly.
+	/// The assigned identity stays local as `Route.via`, so split-horizon withholds
+	/// broadcasts learned through it without promising continuity across reconnects.
 	///
 	/// An identity the peer does declare wins over this one.
 	pub fn with_peer_hop(mut self, hop: crate::Hop) -> Self {
@@ -404,7 +394,6 @@ impl Client {
 				let peer_declared = ietf::peer::Peer {
 					solicit: ietf::solicit::from_setup(&parameters, v)?,
 					hidden: ietf::hidden::from_setup(&parameters, v),
-					..Default::default()
 				};
 
 				let stream = stream.with_version(v);

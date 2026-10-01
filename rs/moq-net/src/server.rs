@@ -364,7 +364,6 @@ impl Server {
 				let peer_declared = ietf::peer::Peer {
 					solicit: ietf::solicit::from_setup(&params, v)?,
 					hidden: ietf::hidden::from_setup(&params, v),
-					..Default::default()
 				};
 				(path, token, request_id_max, peer_declared)
 			}
@@ -408,9 +407,7 @@ impl Server {
 		Ok(Handshake {
 			path: peer_setup.path.clone(),
 			role: None,
-			// A moq-transport peer only has an identity if it negotiated the MoQ
-			// Cluster extension and declared a non-zero Hop ID.
-			origin: peer_setup.declared.cluster.hop.filter(|h| *h != crate::Hop::UNKNOWN),
+			origin: None,
 			token: peer_setup.token.clone(),
 			assigned_hop: crate::Hop::random(),
 			inner: Some(RequestInner {
@@ -685,8 +682,7 @@ where
 	/// The Hop ID declared by the peer, when the negotiated protocol carries one.
 	///
 	/// A moq-lite-05+ endpoint declares this when it attaches a publish or subscribe
-	/// origin; a `moqt-17`+ endpoint declares it via the MoQ Cluster extension. Older
-	/// versions and endpoints without one return `None`.
+	/// origin. moq-transport peers and older moq-lite versions return `None`.
 	///
 	/// Self-declared, so treat it as a correlation hint rather than an
 	/// authenticated identity: authorize on the token or client certificate.

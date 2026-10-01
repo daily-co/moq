@@ -9,7 +9,6 @@ import type * as Path from "../path.ts";
 import { type Reader, Readers, type Stream } from "../stream.ts";
 import { registerWire } from "../wire.ts";
 import { ControlStreamAdapter, NativeSession, type Session } from "./adapter.ts";
-import * as Cluster from "./cluster.ts";
 import { Fetch } from "./fetch.ts";
 import { GoAway } from "./goaway.ts";
 import { Group } from "./object.ts";
@@ -58,9 +57,6 @@ export class Connection implements Established {
 	// What the peer declared about being solicited; see {@link Ietf.solicitFromSetup}.
 	#solicit: boolean | undefined;
 
-	// The Hop IDs this session declared; see {@link Cluster}.
-	#cluster?: Cluster.Hops;
-
 	// Just to avoid logging when `close()` is called.
 	#closed = false;
 
@@ -72,7 +68,6 @@ export class Connection implements Established {
 	 * @param maxRequestId - The initial max request ID
 	 * @param version - The negotiated protocol version
 	 * @param solicit - What the peer's SETUP declared (undefined when it declared nothing)
-	 * @param cluster - The Hop IDs the SETUP exchange settled, on the versions that negotiate them
 	 *
 	 * @internal
 	 */
@@ -87,7 +82,6 @@ export class Connection implements Established {
 		publish,
 		solicit,
 		hidden = false,
-		cluster,
 	}: {
 		url: URL;
 		quic: WebTransport;
@@ -106,11 +100,6 @@ export class Connection implements Established {
 		solicit?: boolean;
 		/** Whether the peer understands the HIDDEN parameter (MoQ Hidden). */
 		hidden?: boolean;
-		/**
-		 * The Hop IDs this session declared (MoQ Cluster). `undefined` on a version that
-		 * cannot negotiate the extension, as is a `peer` the peer never declared.
-		 */
-		cluster?: Cluster.Hops;
 	}) {
 		this.url = url;
 		this.discovery = discovery;
@@ -139,11 +128,9 @@ export class Connection implements Established {
 			publish,
 			requiresSolicitation: solicit ?? false,
 			hidden,
-			cluster,
 		});
 		this.#solicit = solicit;
-		this.#cluster = cluster;
-		this.#subscriber = new Subscriber({ session: this.#session, quic, cluster, hidden });
+		this.#subscriber = new Subscriber({ session: this.#session, quic, hidden });
 		registerWire(this, { consume: (path) => this.#subscriber.consume(path) });
 
 		void this.#run();
@@ -256,11 +243,7 @@ export class Connection implements Established {
 
 			// Subscriber handles incoming notifications
 			case PublishNamespace.id: {
-				const msg = await PublishNamespace.decode(
-					stream.reader,
-					this.#session.version,
-					Cluster.negotiated(this.#cluster),
-				);
+				const msg = await PublishNamespace.decode(stream.reader, this.#session.version);
 
 				// We always declare that advertisements to us must be solicited (MoQ
 				// Solicit), and writing the option at all proves the peer implements the

@@ -10,7 +10,6 @@ content onto another's.
 
 Replaces the wildcard line's "Cluster origin reply" quest. Until this lands,
 moq-transport peers are plain clients
-([moq-transport peers are plain clients](/quest/m1/ietf-cluster-off.md)).
 
 The extension must carry what a lite cluster link carries by then:
 

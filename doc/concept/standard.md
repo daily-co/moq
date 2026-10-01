@@ -83,10 +83,12 @@ negotiated draft does not define still closes the session with
 `PROTOCOL_VIOLATION`, as the draft requires.
 
 Several project drafts extend the IETF wire without breaking it, since `SETUP`
-ignores unknown parameters: [cluster](/draft/moq-cluster) routing hop lists,
-[solicit](/draft/moq-solicit) to make announcements opt-in,
+ignores unknown parameters: [solicit](/draft/moq-solicit) to make announcements opt-in,
 [hidden](/draft/moq-hidden) to keep `.`-named namespaces out of discovery, and
 [probe](/draft/moq-probe) for bandwidth estimation.
+The [cluster draft](/draft/moq-cluster) describes an optional relay extension;
+this implementation leaves it unnegotiated. Cluster links use moq-lite, while
+moq-transport peers remain plain clients.
 [moq-e2ee](/draft/moq-e2ee) is not a transport extension: it encrypts application
 payloads so relays still forward named tracks they cannot read.
 

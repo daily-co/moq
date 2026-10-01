@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-	Control, Message, Publisher, Subscriber, Version, adapter::ControlStreamAdapter, cluster, hidden, peer, solicit,
+	Control, Message, Publisher, Subscriber, Version, adapter::ControlStreamAdapter, hidden, peer, solicit,
 	subscriber::is_protocol_violation,
 };
 
@@ -33,19 +33,10 @@ pub struct Config<S: crate::transport::poll::Session> {
 	pub publish: Option<origin::Consumer>,
 	pub subscribe: Option<origin::Producer>,
 
-	/// The origin (hop) id to assign the peer when it declares none itself. See
-	/// `Client::with_peer_hop`; a peer that negotiates the MoQ Cluster extension
-	/// declares its own, which wins.
+	/// The locally assigned peer identity used for split-horizon.
 	pub peer_hop: Option<Hop>,
 
-	/// What crossing this link costs. Declared in our SETUP (see
-	/// [`cluster::RELAY_COST`]) for the peer to charge, and charged locally on what the
-	/// peer sends us. `None` declares nothing and charges whatever the peer declared,
-	/// falling back to 1; that is what a server accepting a connection passes, since it
-	/// has no per-peer configuration of its own.
-	///
-	/// Only `moqt-17`+ negotiates the MoQ Cluster extension. Earlier drafts carry no
-	/// cost at all, so nothing is charged and their routes rank on hop count alone.
+	/// The local link cost, defaulting to 1. Never advertised over moq-transport.
 	pub cost: Option<u64>,
 
 	pub version: Version,
@@ -95,13 +86,6 @@ where
 	let (goaway_handle, goaway) = crate::goaway::Handle::new(!client);
 
 	let driver = async move {
-		// Our own Hop ID, taken from whichever origin the caller actually supplied so
-		// every session out of this process stamps the same one and cross-session loop
-		// detection works. Read BEFORE the placeholders below: their ids are random and
-		// identify nothing, so declaring one would compare incoming paths against an
-		// identity no other session shares.
-		let self_origin = self_origin(publish.as_ref(), subscribe.as_ref());
-
 		// moq-transport threads concrete origins through the publisher/subscriber.
 		// An unset half gets an empty origin: an empty publish origin announces
 		// nothing, and an empty subscribe origin issues no SUBSCRIBE_NAMESPACE.
@@ -118,7 +102,9 @@ where
 			// A legacy caller that passed nothing (our own tests, and the lite paths):
 			// settle the slot rather than leave the announce loops waiting on a value
 			// that is never coming.
-			None if !cluster::supported(version) => peer_setup.set(peer::Peer::default()),
+			None if matches!(version, Version::Draft14 | Version::Draft15 | Version::Draft16) => {
+				peer_setup.set(peer::Peer::default())
+			}
 			None => {}
 		}
 
@@ -149,7 +135,6 @@ where
 					control,
 					peer_hop,
 					peer_setup.clone(),
-					self_origin,
 					cost,
 					version,
 					tasks.clone(),
@@ -283,9 +268,7 @@ where
 					let session = session.clone();
 					let goaway = goaway.clone();
 					async move {
-						if let Err(err) =
-							run_setup(runtime, session, version, path, authority, self_origin, cost, goaway).await
-						{
+						if let Err(err) = run_setup(runtime, session, version, path, authority, goaway).await {
 							tracing::warn!(%err, "setup send error");
 						}
 						std::future::pending::<()>().await;
@@ -310,7 +293,6 @@ where
 					control,
 					peer_hop,
 					peer_setup.clone(),
-					self_origin,
 					cost,
 					version,
 					tasks,
@@ -452,20 +434,8 @@ pub struct PeerSetup<S: crate::transport::poll::Session> {
 	/// The credential the peer presented in its `AUTHORIZATION TOKEN` option.
 	pub token: Option<crate::setup::Token>,
 
-	/// The Setup Options it declared (see [`cluster`] and [`solicit`]).
+	/// The Setup Options it declared (see [`solicit`] and [`hidden`]).
 	pub declared: peer::Peer,
-}
-
-/// The Hop ID this session declares and detects loops against.
-///
-/// Both halves of a session share the process's origin identity, so either one names
-/// it; the publish half is just the usual one to be set. A session with neither half
-/// has no content to route, so a throwaway id is all it can offer.
-fn self_origin(publish: Option<&origin::Consumer>, subscribe: Option<&origin::Producer>) -> Hop {
-	publish
-		.map(|origin| origin.hop())
-		.or_else(|| subscribe.map(|origin| origin.hop()))
-		.unwrap_or_else(Hop::random)
 }
 
 /// Server (draft-17+): read the peer's SETUP off its uni stream before starting the
@@ -525,7 +495,6 @@ fn decode_peer_setup(parameters: bytes::Bytes, version: Version) -> Result<peer:
 /// a future option reaches both the pre-read accept path and the uni loop.
 fn peer_from_params(params: &ietf::Parameters, version: Version) -> Result<peer::Peer, crate::DecodeError> {
 	Ok(peer::Peer {
-		cluster: cluster::peer_from_setup(params, version)?,
 		solicit: solicit::from_setup(params, version)?,
 		hidden: hidden::from_setup(params, version),
 	})
@@ -535,9 +504,7 @@ fn peer_from_params(params: &ietf::Parameters, version: Version) -> Result<peer:
 /// also our GOAWAY channel, so a fired drain trigger encodes the GOAWAY here.
 ///
 /// `path` is the request path we advertise (clients on URL-less transports); a
-/// server passes `None`. `self_origin` and `cost` are the MoQ Cluster options, which
-/// declare our identity and (client-only) what this link costs to cross. The MoQ Solicit
-/// declaration is unconditional, so it takes no argument.
+/// server passes `None`. Solicit and Hidden declarations are unconditional.
 #[allow(clippy::too_many_arguments)]
 async fn run_setup<S: crate::transport::poll::Session>(
 	runtime: crate::time::Clock,
@@ -545,8 +512,6 @@ async fn run_setup<S: crate::transport::poll::Session>(
 	version: Version,
 	path: Option<String>,
 	authority: Option<String>,
-	self_origin: Hop,
-	cost: Option<u64>,
 	goaway: crate::goaway::Protocol,
 ) -> Result<(), Error> {
 	let outer_version = crate::Version::Ietf(version);
@@ -562,7 +527,6 @@ async fn run_setup<S: crate::transport::poll::Session>(
 	if let Some(authority) = authority {
 		parameters.set_bytes(ietf::ParameterBytes::Authority, authority.into_bytes());
 	}
-	cluster::peer_into_setup(&mut parameters, self_origin, cost, version);
 	solicit::into_setup(&mut parameters, version);
 	hidden::into_setup(&mut parameters, version);
 	let parameters = parameters.encode_bytes(version)?;
@@ -620,7 +584,7 @@ async fn run_setup<S: crate::transport::poll::Session>(
 async fn run_unis<S>(
 	mut session: S,
 	subscriber: Subscriber<S>,
-	// Where to record the peer's MoQ Cluster options once its SETUP arrives. `None`
+	// Where to record the peer's Setup Options once its SETUP arrives. `None`
 	// for draft-14..16, whose SETUP rides the control stream instead.
 	peer_setup: Option<peer::PeerSetup>,
 	// Whether the peer's SETUP was already consumed before this loop started.
@@ -680,8 +644,8 @@ where
 		};
 
 		// v17+: SETUP arrives on a uni stream, then becomes the GOAWAY channel.
-		// We accept it in the background without blocking; the one thing that does
-		// need it (the MoQ Cluster negotiation) waits on `peer_setup` instead, so a
+		// We accept it without blocking; tasks that need its options
+		// wait on `peer_setup`, so a
 		// slow SETUP delays announcements rather than the whole session.
 		if kind == setup::SETUP_V17 {
 			// Exactly one SETUP per endpoint. A second would let a peer restate its
@@ -798,14 +762,7 @@ async fn run_dispatch<S>(
 where
 	S: crate::transport::poll::Boxable,
 {
-	// PUBLISH_NAMESPACE decodes differently once the MoQ Cluster extension is
-	// negotiated, so the whole dispatch loop waits for the peer's SETUP first. The peer
-	// must send it before anything else, and `run_unis` reads it independently, so this
-	// costs a handshake round rather than blocking.
-	let peer = subscriber.peer().await;
-
-	// From the same slot, so this costs nothing extra: it decides whether an unsolicited
-	// advertisement is the peer ignoring our own SETUP (MoQ Solicit).
+	// SETUP decides whether an unsolicited advertisement violates MoQ Solicit.
 	let declared = subscriber.solicit().await;
 
 	let mut tasks = TaskSet::owned();
@@ -867,7 +824,7 @@ where
 			}
 			// Subscriber handles: Publish, PublishNamespace
 			ietf::Publish::ID | ietf::PublishNamespace::ID => {
-				tasks.push(subscriber.handle_stream(id, data, stream, peer, declared)?);
+				tasks.push(subscriber.handle_stream(id, data, stream, declared)?);
 			}
 			_ => {
 				tracing::warn!(id, "unexpected bidi stream type");
@@ -943,88 +900,27 @@ mod tests {
 	use super::*;
 	use crate::model::ProduceTest;
 
+	#[test]
+	fn cluster_setup_options_are_ignored() {
+		for version in [
+			Version::Draft17,
+			Version::Draft18,
+			Version::Draft19,
+			Version::Draft20,
+			Version::Draft21,
+			Version::Draft22,
+		] {
+			let mut params = ietf::Parameters::default();
+			params.set_varint(ietf::ParameterVarInt::Unknown(0x40B54), 42);
+			params.set_varint(ietf::ParameterVarInt::Unknown(0x40B56), 3);
+			let declared = decode_peer_setup(params.encode_bytes(version).unwrap(), version).unwrap();
+			assert_eq!(declared, peer::Peer::default(), "{version}");
+		}
+	}
+
 	fn occurrences(log: &crate::lite::test_transport::Log, needle: &[u8]) -> usize {
 		let writes = log.writes.lock().unwrap();
 		writes.windows(needle.len()).filter(|window| *window == needle).count()
-	}
-
-	/// The peer's REQUEST_OK followed by a NAMESPACE in the base form: no cluster
-	/// parameters, so no HOP_PATH. Built with the crate's own writer so the framing
-	/// can't drift from the encoder under test.
-	async fn namespace_without_hop_path(version: Version) -> Vec<u8> {
-		let log = crate::lite::test_transport::Log::default();
-		let mut writer = crate::coding::Writer::new(crate::lite::test_transport::SinkSend::new(log.clone()), version);
-
-		writer.encode(&ietf::RequestOk::ID).await.unwrap();
-		writer.encode(&ietf::RequestOk { request_id: None }).await.unwrap();
-		writer.encode(&ietf::Namespace::ID).await.unwrap();
-		writer
-			.encode(&ietf::Namespace {
-				suffix: crate::Path::new("cam"),
-				cluster: None,
-			})
-			.await
-			.unwrap();
-
-		let writes = log.writes.lock().unwrap();
-		writes.clone()
-	}
-
-	/// A session that negotiated the MoQ Cluster extension requires HOP_PATH on every
-	/// NAMESPACE, and the draft answers a missing one by closing the session.
-	///
-	/// Driven through `start` rather than `run_subscribe_namespace` directly: the
-	/// stream surfaces the error either way, so only this loop's handling of it decides
-	/// between a close and a warning, and a test below the loop would pass regardless.
-	#[tokio::test]
-	async fn a_namespace_without_a_hop_path_closes_the_session() {
-		const VERSION: Version = Version::Draft19;
-
-		// A driver that swallows the violation parks forever instead of failing, so
-		// bound it: paused time makes the deadline fire the moment nothing else can run.
-		tokio::time::pause();
-
-		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
-		let session = crate::lite::test_transport::ScriptedSession::new(namespace_without_hop_path(VERSION).await);
-		let log = session.log.clone();
-
-		let (driver, _goaway) = start(Config {
-			runtime: crate::time::Clock::tokio(),
-			session,
-			setup: None,
-			request_id_max: None,
-			client: true,
-			publish: None,
-			subscribe: Some(origin),
-			peer_hop: None,
-			cost: None,
-			version: VERSION,
-			path: None,
-			authority: None,
-			peer_setup_stream: None,
-			// A peer that declared its Hop ID negotiated the extension, which is what
-			// makes the cluster parameters mandatory in both directions.
-			peer_declared: Some(peer::Peer {
-				cluster: cluster::Peer {
-					hop: Some(crate::Hop::new(2).unwrap()),
-					cost: None,
-				},
-				..Default::default()
-			}),
-		})
-		.expect("start the session");
-
-		let err = tokio::time::timeout(std::time::Duration::from_secs(10), driver)
-			.await
-			.expect("the session ended rather than carrying on")
-			.expect_err("a malformed NAMESPACE fails the session");
-
-		assert!(is_protocol_violation(&err), "not treated as the peer's fault: {err}");
-		// A session close carries a session code, so the peer is told PROTOCOL_VIOLATION
-		// rather than the local table's value for whichever decode error we hit.
-		let (code, reason) = log.closes().first().cloned().expect("the session was closed");
-		assert_eq!(code, SessionError::ProtocolViolation.to_code());
-		assert_eq!(reason, err.to_string());
 	}
 
 	/// A subscriber issues one SUBSCRIBE_NAMESPACE per PERMITTED PREFIX, and asks for
@@ -1166,27 +1062,6 @@ mod tests {
 			1,
 			"no unsolicited PUBLISH_NAMESPACE"
 		);
-	}
-
-	/// The declared Hop ID must be the caller's own origin, whichever half carries it.
-	///
-	/// A subscribe-only session (an ingest that publishes nothing) still routes, so
-	/// declaring the placeholder's random id would compare incoming paths against an
-	/// identity no other session out of this process shares, and a route returning
-	/// here would never be recognized as a loop.
-	#[test]
-	fn the_hop_id_comes_from_whichever_origin_the_caller_set() {
-		let ours = crate::Hop::new(42).unwrap();
-
-		let publish = crate::origin::Config::new(ours).produce();
-		assert_eq!(self_origin(Some(&publish.consume()), None), ours, "the publish half");
-
-		let subscribe = crate::origin::Config::new(ours).produce();
-		assert_eq!(self_origin(None, Some(&subscribe)), ours, "the subscribe half alone");
-
-		// Neither half: nothing to route, so any id will do as long as it is ours.
-		let publish = crate::origin::Config::new(ours).produce();
-		assert_eq!(self_origin(Some(&publish.consume()), Some(&subscribe)), ours);
 	}
 
 	/// Drive `start` against a peer whose incoming streams die before their first
@@ -1343,7 +1218,6 @@ mod tests {
 			Control::new(None, true),
 			None,
 			peer_setup.clone(),
-			crate::Hop::new(1).unwrap(),
 			None,
 			VERSION,
 			tasks,
@@ -1412,7 +1286,6 @@ mod tests {
 			.encode(&ietf::PublishNamespace {
 				request_id: RequestId(1),
 				track_namespace: crate::Path::new("room/host"),
-				cluster: None,
 			})
 			.await
 			.unwrap();

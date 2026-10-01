@@ -10,10 +10,6 @@ export const SetupOption = {
 	MaxAuthTokenCacheSize: 4n,
 	Authority: 5n,
 	Implementation: 7n,
-	/** HOP_ID, from the MoQ Cluster extension. See `cluster.ts`. */
-	HopId: 0x40b54n,
-	/** RELAY_COST, from the MoQ Cluster extension. See `cluster.ts`. */
-	RelayCost: 0x40b56n,
 	/** SOLICIT, from the MoQ Solicit extension. See `solicit.ts`. */
 	Solicit: 0x40b5an,
 	/** HIDDEN, from the MoQ Hidden extension. See `hidden.ts`. */
@@ -208,8 +204,6 @@ const MSG_PARAM_SUBSCRIBER_PRIORITY = 0x20n;
 const MSG_PARAM_GROUP_ORDER = 0x22n;
 /// INCLUDE_PROPERTIES, draft-20's opt-out from Track Properties.
 const MSG_PARAM_INCLUDE_PROPERTIES = 0x35n;
-/// ROUTE_COST, from the MoQ Cluster extension. See `cluster.ts`.
-const MSG_PARAM_ROUTE_COST = 0x40b58n;
 /// HIDDEN, from the MoQ Hidden extension. See `hidden.ts`.
 const MSG_PARAM_HIDDEN = 0x40b5en;
 
@@ -220,8 +214,6 @@ const MSG_PARAM_LARGEST_OBJECT = 0x09n;
 const MSG_PARAM_SUBSCRIPTION_FILTER = 0x21n;
 /// FILL_PARAMETERS, draft-20's request for a backfill.
 const MSG_PARAM_FILL_PARAMETERS = 0x23n;
-/// HOP_PATH, from the MoQ Cluster extension. See `cluster.ts`.
-const MSG_PARAM_HOP_PATH = 0x40b57n;
 
 /// The object Range Filters (draft-19): SUBGROUP, OBJECTID, PRIORITY and OBJECT_PROPERTY.
 /// Each is length prefixed whatever the parity of its id.
@@ -248,7 +240,6 @@ function getMessageParamKind(id: bigint): MessageParamKind {
 		case MSG_PARAM_SUBGROUP_DELIVERY_TIMEOUT:
 		case MSG_PARAM_MAX_CACHE_DURATION:
 		case MSG_PARAM_EXPIRES:
-		case MSG_PARAM_ROUTE_COST:
 		case MSG_PARAM_HIDDEN:
 			return "varint";
 		case MSG_PARAM_PUBLISHER_PRIORITY:
@@ -263,7 +254,6 @@ function getMessageParamKind(id: bigint): MessageParamKind {
 		case MSG_PARAM_AUTHORIZATION_TOKEN:
 		case MSG_PARAM_SUBSCRIPTION_FILTER:
 		case MSG_PARAM_FILL_PARAMETERS:
-		case MSG_PARAM_HOP_PATH:
 			return "bytes";
 		default:
 			if (MSG_PARAM_REPEATABLE.includes(id)) return "bytes";
@@ -451,24 +441,6 @@ export class Parameters {
 
 	set includeProperties(v: boolean) {
 		this.vars.set(MSG_PARAM_INCLUDE_PROPERTIES, v ? 1n : 0n);
-	}
-
-	/** HOP_PATH: the hop chain an advertisement traversed, as its raw parameter value. */
-	get hopPath(): Uint8Array | undefined {
-		return this.bytes.get(MSG_PARAM_HOP_PATH);
-	}
-
-	set hopPath(v: Uint8Array) {
-		this.bytes.set(MSG_PARAM_HOP_PATH, v);
-	}
-
-	/** ROUTE_COST: the accumulated cost of that path. Absent means 0. */
-	get routeCost(): bigint | undefined {
-		return this.vars.get(MSG_PARAM_ROUTE_COST);
-	}
-
-	set routeCost(v: bigint) {
-		this.vars.set(MSG_PARAM_ROUTE_COST, v);
 	}
 
 	async encode(w: Writer, version: IetfVersion) {

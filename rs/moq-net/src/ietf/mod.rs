@@ -7,7 +7,6 @@
 #[macro_use]
 mod parameters;
 mod adapter;
-pub mod cluster;
 mod control;
 mod datagram;
 pub(crate) mod error;

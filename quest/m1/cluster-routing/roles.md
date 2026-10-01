@@ -48,7 +48,3 @@ refused, and losing a core moves only its paths.
 
 Public API: a relay config field for the role and a TLS qmux URL scheme.
 Wire: none expected.
-
-## Related
-
-- [moq-transport peers are plain clients](/quest/m1/ietf-cluster-off.md) - cluster links are lite-only

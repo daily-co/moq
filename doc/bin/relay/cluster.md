@@ -12,9 +12,10 @@ upstream bandwidth.
 
 Each broadcast carries the list of relays it passed through. That hop list
 catches loops and picks the shortest route, and every relay breaks ties the
-same way so the cluster converges instead of flapping. Both wire protocols
-carry it: natively on moq-lite, and via the [cluster extension](/draft/moq-cluster)
-on moq-transport 17+.
+same way so the cluster converges instead of flapping. Cluster links use
+moq-lite. moq-transport peers are plain clients: they never negotiate the
+[cluster extension](/draft/moq-cluster), receive hop IDs or relay costs, or join
+the relay mesh. Publishing and watching over moq-transport remain supported.
 
 When a moq-lite-04 or later peer withdraws its last advertisement for a broadcast, a relay
 drops every other route to it that passed through that peer, since each was
@@ -37,13 +38,12 @@ are spliced in. If no compatible source remains, the track fails with
 identity.
 
 A route whose original publisher (its first hop) changes is updated in place on
-both wire protocols, so the broadcast never briefly vanishes downstream.
+moq-lite, so the broadcast never briefly vanishes downstream.
 Subscriptions already in flight keep draining the old publisher until it ends
 and are never spliced onto the new one. New requests resolve through the updated
 route as a fresh broadcast, without the old publisher's track properties.
 
-A publisher whose protocol names no hop (moq-transport without the cluster
-extension, moq-lite 01 through 03, or a peer that sends 0) gets a random first
+A publisher whose protocol names no hop (moq-transport, moq-lite 01 through 03, or a peer that sends 0) gets a random first
 hop from the relay it connects to, fresh for each connection, followed by a 0.
 Its reconnect is therefore a new publisher downstream, a reprice on the same
 connection stays in place, and the 0 keeps it ranked as anonymous.
@@ -122,8 +122,8 @@ moq-lite-06 announcements carry two prices, *warm* and *cold*. Both accumulate
 identically today, so routing runs on link costs alone; the split reserves room
 for a warm-copy discount, letting a relay advertise its cached copy cheaper on
 the warm side while the cold price still says who sits closest to the publisher.
-moq-transport has nowhere to carry the cold price, so a route learned from it
-ranks with an unknown (worst-case) one.
+moq-transport carries no route price, so a route learned from a plain client
+has the local link cost as its warm price and an unknown cold price.
 
 ## LAN discovery
 

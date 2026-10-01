@@ -21,7 +21,7 @@ use crate::{
 	util::{MaybeBoxedExt, MaybeSendBox},
 };
 
-use super::{Message, Version, cluster, error::request, peer};
+use super::{Message, Version, error::request, peer};
 
 /// Largest millisecond duration every implementation can carry losslessly.
 const MAX_SAFE_AGE_MS: u64 = (1_u64 << 53) - 1;
@@ -193,25 +193,14 @@ enum Advert {
 	/// Nothing: every route loops through the peer or us, or none is announced.
 	#[default]
 	None,
-	/// The namespace, with no routing information: the peer did not negotiate the MoQ
-	/// Cluster extension, so there is nowhere to put a path or a cost.
+	/// The namespace, with no routing information.
 	Plain,
-	/// The namespace, with the path it traversed and that path's accumulated cost.
-	Cluster(cluster::Advert),
 }
 
 impl Advert {
 	/// Whether the peer should hold this namespace at all.
 	fn wanted(&self) -> bool {
 		!matches!(self, Self::None)
-	}
-
-	/// The parameters to put on the wire, as the message structs carry them.
-	fn params(&self) -> Option<cluster::Advert> {
-		match self {
-			Self::Cluster(advert) => Some(advert.clone()),
-			_ => None,
-		}
 	}
 }
 
@@ -270,8 +259,6 @@ impl<S: crate::transport::poll::Session> Target<S> {
 
 /// One announce loop's state: where its advertisements go, and what the peer holds.
 struct Namespaces<S: crate::transport::poll::Session> {
-	/// What the peer declared in its SETUP, which decides what an advertisement carries.
-	peer: cluster::Peer,
 	target: Target<S>,
 	/// Every announced broadcast under this loop's prefix.
 	watched: HashMap<crate::PathOwned, Watched>,
@@ -281,9 +268,8 @@ struct Namespaces<S: crate::transport::poll::Session> {
 }
 
 impl<S: crate::transport::poll::Session> Namespaces<S> {
-	fn new(peer: cluster::Peer, target: Target<S>) -> Self {
+	fn new(target: Target<S>) -> Self {
 		Self {
-			peer,
 			target,
 			watched: HashMap::new(),
 			requests: HashMap::new(),
@@ -313,10 +299,7 @@ pub(super) struct Publisher<S: crate::transport::poll::Session> {
 	// origin we consume so it matches the local relay identity across every session,
 	// which is what makes cross-session loop detection work.
 	self_origin: crate::Hop,
-	// The identity assigned to the peer by the caller (`Client::with_peer_hop`, or
-	// the per-session default a server hands every request), used when the peer declares
-	// none itself. A peer that negotiates the MoQ Cluster extension declares its own,
-	// which wins unless it withheld it as the reserved 0.
+	// The caller's local identity for split-horizon. moq-transport carries none.
 	peer_hop: Option<crate::Hop>,
 	// What the peer declared in its SETUP, filled when that stream is read.
 	peer_setup: peer::PeerSetup,
@@ -381,21 +364,9 @@ where
 		}
 	}
 
-	/// What the peer declared in its SETUP, or the default (extension off) on a version
-	/// that cannot negotiate it.
-	///
-	/// Blocks until the peer's SETUP arrives, because the extension changes the NAMESPACE
-	/// encoding: nothing can be advertised until we know whether the peer speaks it.
-	async fn peer(&self) -> cluster::Peer {
-		match cluster::supported(self.version) {
-			true => self.peer_setup.get().await.cluster,
-			false => cluster::Peer::default(),
-		}
-	}
-
 	/// Whether the peer requires advertisements to be solicited, from the same SETUP.
 	///
-	/// Blocks on it for the same reason [`Self::peer`] does: this decides whether the
+	/// This decides whether the
 	/// first advertisement is sent unasked, so it cannot be guessed and corrected later.
 	async fn requires_solicitation(&self) -> bool {
 		self.peer_setup.get().await.solicit.unwrap_or(false)
@@ -408,50 +379,34 @@ where
 	/// The same exclusion the announce path applies (see [`Self::select`]), which is what
 	/// keeps advertised paths truthful and prevents subscription cycles of any length.
 	async fn serving_origin(&self) -> origin::Consumer {
-		self.excluding(&self.peer().await)
+		self.excluding()
 	}
 
 	/// Our origin handle with [`Self::exclude`] applied, the view both the data plane
 	/// and the announce loops read this peer's routes through.
-	fn excluding(&self, peer: &cluster::Peer) -> origin::Consumer {
-		self.origin.clone().excluding(self.exclude(peer))
+	fn excluding(&self) -> origin::Consumer {
+		self.origin.clone().excluding(self.exclude())
 	}
 
 	/// The Hop ID whose paths must not be advertised (or served) back to this peer.
 	///
-	/// A peer that declared an identity supplies its own; otherwise fall back to the one
-	/// we assigned it (`Client::with_peer_hop` when dialing, `Request::with_peer_hop`
-	/// or a fresh per-session id when accepting), since moq-transport carries no identity
-	/// of its own. A peer that declared the reserved 0 declared no identity, so it takes
-	/// the fallback like any other anonymous peer.
-	fn exclude(&self, peer: &cluster::Peer) -> crate::Hop {
-		peer.identity().or(self.peer_hop).unwrap_or(crate::Hop::UNKNOWN)
+	/// The caller assigns this locally because moq-transport carries no peer identity.
+	fn exclude(&self) -> crate::Hop {
+		self.peer_hop.unwrap_or(crate::Hop::UNKNOWN)
 	}
 
 	/// Pick what to advertise to this peer for one route.
 	///
 	/// The origin's announce cursor already filters routes through the peer
 	/// (control-plane split horizon); this only shapes what the wire can carry.
-	fn select(&self, route: &crate::origin::Route, peer: &cluster::Peer) -> Advert {
+	fn select(&self, route: &crate::origin::Route) -> Advert {
 		// A route that already passed through us is a reflection. The origin
 		// filters these on receive, so this is defensive.
 		if self.self_origin != crate::Hop::UNKNOWN && route.hops.contains(&self.self_origin) {
 			return Advert::None;
 		}
 
-		if !peer.negotiated() {
-			return Advert::Plain;
-		}
-
-		// The Cluster extension has room for the warm cost only; a peer on this
-		// wire learns nothing about the cold path (see `cluster::Advert::route`).
-		let cost = route.cost.clamped().warm;
-		// Our own Hop ID is always the last entry, so the peer reconstructs the full
-		// path. A chain with no room left is a loop in all but name.
-		match cluster::Advert::forward(&route.hops, cost, self.self_origin) {
-			Ok(advert) => Advert::Cluster(advert),
-			Err(_) => Advert::None,
-		}
+		Advert::Plain
 	}
 
 	/// Handle an incoming bidi stream dispatched by the session.
@@ -1544,7 +1499,6 @@ where
 		path: &crate::PathOwned,
 	) -> Result<(), Error> {
 		let Namespaces {
-			peer,
 			target,
 			watched,
 			requests,
@@ -1553,7 +1507,7 @@ where
 		let Some(watch) = watched.get(suffix) else {
 			return Ok(());
 		};
-		let advert = self.select(&watch.route, peer);
+		let advert = self.select(&watch.route);
 		let refused = watch.refused;
 		let wanted = advert.wanted();
 		let held = watch.sent.wanted();
@@ -1588,17 +1542,10 @@ where
 						}
 						self.withdraw_namespace(target, requests, suffix.clone()).await?;
 					}
-					(true, Some(_)) => {
-						tracing::debug!(broadcast = %absolute, "publish_namespace update");
-						refused = self
-							.update_namespace(target, requests, suffix, &watch.sent, &advert)
-							.await?;
-					}
+					(true, Some(_)) => {}
 					(true, None) => {
 						tracing::debug!(broadcast = %absolute, "publish_namespace");
-						refused = self
-							.advertise_namespace(requests, path, suffix.clone(), advert.params())
-							.await?;
+						refused = self.advertise_namespace(requests, path, suffix.clone()).await?;
 					}
 				}
 				// The peer can reject a fresh PUBLISH_NAMESPACE or an update, which leaves
@@ -1618,7 +1565,6 @@ where
 							.writer
 							.encode(&ietf::Namespace {
 								suffix: suffix.as_path(),
-								cluster: advert.params(),
 							})
 							.await?;
 					}
@@ -1659,7 +1605,6 @@ where
 		requests: &mut HashMap<crate::PathOwned, NamespaceRequest<S>>,
 		path: &crate::PathOwned,
 		suffix: crate::PathOwned,
-		cluster: Option<cluster::Advert>,
 	) -> Result<Refused, Error> {
 		let request_id = self.control.next_request_id(&self.runtime).await?;
 
@@ -1678,7 +1623,6 @@ where
 			.encode(&ietf::PublishNamespace {
 				request_id,
 				track_namespace: path.as_path(),
-				cluster,
 			})
 			.await?;
 
@@ -1721,68 +1665,6 @@ where
 			},
 		);
 		Ok(Refused::No)
-	}
-
-	/// Update a namespace the peer holds: REQUEST_UPDATE on the request that carries
-	/// it, with only the parameters that changed, then its answer.
-	///
-	/// Waiting for the answer keeps one update outstanding per stream, which satisfies
-	/// any MAX_REQUEST_UPDATES the peer set without reading it, and the answer is what
-	/// decides whether the peer still holds the namespace: a REQUEST_ERROR closes the
-	/// stream and withdraws the advertisement (moq-transport Section 9.5.1), so the
-	/// request is dropped here and the retry re-offers it fresh. An unanswered update
-	/// is dropped the same way, since a peer that ignored it cannot be assumed to hold
-	/// either price.
-	///
-	/// A different original publisher is an update like any other: the receiver
-	/// drains what it already serves from the old one and never splices the two.
-	///
-	/// Returns what the refusal, if any, said about coming back.
-	async fn update_namespace(
-		&self,
-		target: &mut Target<S>,
-		requests: &mut HashMap<crate::PathOwned, NamespaceRequest<S>>,
-		suffix: &crate::PathOwned,
-		held: &Advert,
-		advert: &Advert,
-	) -> Result<Refused, Error> {
-		// A plain advertisement has no parameters to reprice, and a namespace the peer
-		// does not hold has nothing to update; neither is a wire message.
-		let (Some(next), Some(held)) = (advert.params(), held.params()) else {
-			return Ok(Refused::No);
-		};
-		let Some(request) = requests.get_mut(suffix) else {
-			return Ok(Refused::No);
-		};
-		let request_id = self.control.next_request_id(&self.runtime).await?;
-		let update = ietf::PublishNamespaceUpdate::between(request_id, &held, &next);
-
-		request.stream.writer.encode(&ietf::PublishNamespaceUpdate::ID).await?;
-		request.stream.writer.encode(&update).await?;
-
-		let absolute = self.origin.absolute(&request.path).to_owned();
-		let Some((type_id, mut data)) = self.read_response(&mut request.stream).await? else {
-			tracing::debug!(broadcast = %absolute, "no answer to the update");
-			// Abrupt: a peer that never answers is not owed the FIN handshake.
-			requests.remove(suffix);
-			return Ok(Refused::No);
-		};
-
-		match type_id {
-			ietf::RequestOk::ID => {
-				let msg = ietf::RequestOk::decode_msg(&mut data, self.version)?;
-				tracing::debug!(message = ?msg, "publish_namespace update ok");
-				Ok(Refused::No)
-			}
-			ietf::RequestError::ID => {
-				let msg = ietf::RequestError::decode_msg(&mut data, self.version)?;
-				tracing::warn!(message = ?msg, "publish_namespace update error");
-				// The peer closed its side; finishing ours completes the withdrawal.
-				self.withdraw_namespace(target, requests, suffix.clone()).await?;
-				Ok(self.refusal(msg.retry_interval))
-			}
-			_ => Err(Error::UnexpectedMessage),
-		}
 	}
 
 	/// How to read a refusal's retry interval, in milliseconds.
@@ -1924,17 +1806,13 @@ where
 			return Ok(());
 		}
 
-		// The cluster extension changes what an advertisement carries, so nothing can be
-		// sent until the peer's SETUP says whether it speaks it.
-		let peer = self.peer().await;
-
 		// Split horizon, as the solicited loop applies it: never advertise a route back
 		// to the peer it came from.
 		let origin = self
-			.excluding(&peer)
+			.excluding()
 			.discovery(!self.peer_setup.get().await.hidden || self.origin.includes_hidden());
 
-		let ns = Namespaces::new(peer, Target::Requests(None));
+		let ns = Namespaces::new(Target::Requests(None));
 		self.run_namespaces(origin, crate::Path::empty().to_owned(), ns).await
 	}
 
@@ -1995,13 +1873,10 @@ where
 			}
 		}
 
-		// The extension changes what an advertisement carries, so nothing can be
-		// sent until the peer's SETUP says whether it speaks it.
-		let peer = self.peer().await;
 		// Register the split-horizon peer on the announce cursor too. The origin
 		// model uses this exposure to park a reflected copy before it can replace
 		// the source we are currently advertising to that peer.
-		let origin = origin.excluding(self.exclude(&peer));
+		let origin = origin.excluding(self.exclude());
 
 		// Draft-14/15 predate NAMESPACE, so they answer with their own PUBLISH_NAMESPACE
 		// requests and keep this stream open for the subscription's lifetime.
@@ -2026,7 +1901,7 @@ where
 			false => origin.beyond(&self.origin.clone().discovery(false)),
 		};
 
-		let ns = Namespaces::new(peer, target);
+		let ns = Namespaces::new(target);
 		self.run_namespaces(origin, prefix, ns).await
 	}
 
@@ -4471,132 +4346,17 @@ mod tests {
 		(publisher, consumer, vec![echoed, local])
 	}
 
-	/// A broadcast whose every route flows through the peer's assigned identity
-	/// (`Client::with_peer_hop`) is never advertised to that peer; it would only
-	/// echo the peer's own content back at it. A broadcast with an independent
-	/// route still is.
 	#[tokio::test(start_paused = true)]
 	async fn assigned_peer_hop_filters_echoed_announces() {
 		let assigned = crate::Hop::new(777).unwrap();
 		let (publisher, consumer, _routes) = echo_harness(assigned).await;
-
-		let peer = cluster::Peer::default();
 
 		// The cursor is what filters: an excluded consumer never sees the echoed route.
 		let mut announced = consumer.excluding(assigned).announced();
 		let local = announced.assert_next_active("from/us");
 		announced.assert_next_wait();
 
-		assert_eq!(publisher.select(&local, &peer), Advert::Plain);
-	}
-
-	/// An anonymous chain received from an identified peer keeps the 0 on the wire
-	/// and is never advertised back to that session: split-horizon matches `via`
-	/// as well as the chain.
-	#[tokio::test(start_paused = true)]
-	async fn anonymous_chain_is_forwarded_with_zero_and_not_echoed() {
-		let assigned = crate::Hop::new(777).unwrap();
-		let r1 = crate::Hop::new(9).unwrap();
-		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
-		let consumer = origin.consume();
-		let publisher = Publisher::new(
-			crate::time::Clock::tokio(),
-			crate::lite::test_transport::SinkSession::new(Default::default()),
-			origin.consume(),
-			Control::new(None, false),
-			Some(assigned),
-			peer::PeerSetup::default(),
-			Version::Draft19,
-		);
-
-		let mut hops = crate::Hops::new();
-		hops.push(crate::Hop::UNKNOWN).unwrap();
-		hops.push(r1).unwrap();
-		let _echoed = origin
-			.announce(
-				"from/peer",
-				crate::origin::Route::default().with_hops(hops.clone()).with_via(r1),
-			)
-			.unwrap();
-
-		let peer = cluster::Peer {
-			hop: Some(r1),
-			cost: None,
-		};
-		let mut announced = consumer.excluding(publisher.exclude(&peer)).announced();
-		announced.assert_next_wait();
-
-		let forwarded = cluster::Advert::forward(&hops, 0, crate::Hop::new(1).unwrap()).unwrap();
-		let ids: Vec<_> = forwarded.hops.hops().iter().map(|h| h.id()).collect();
-		assert_eq!(ids, vec![0, 9, 1]);
-	}
-
-	/// Declaring the reserved 0 turns the extension on while naming nobody, so the
-	/// identity we assigned stands in, exactly as for a peer that never negotiated.
-	/// Asserted on the resolution itself rather than through an advertisement: a
-	/// negotiated peer always sends its own HOP_PATH, so a route attributed to the
-	/// assigned identity is a state this peer class cannot reach; see
-	/// [`a_declared_zero_chain_is_not_advertised_back`] for what it gets instead.
-	#[tokio::test(start_paused = true)]
-	async fn withheld_peer_hop_falls_back_to_assigned() {
-		let assigned = crate::Hop::new(777).unwrap();
-		let declared = crate::Hop::new(9).unwrap();
-		let (publisher, _consumer, _routes) = echo_harness(assigned).await;
-
-		let withheld = cluster::Peer {
-			hop: Some(crate::Hop::UNKNOWN),
-			cost: None,
-		};
-		assert!(withheld.negotiated(), "the extension is on");
-		assert_eq!(publisher.exclude(&withheld), assigned, "0 names nobody, so we do");
-
-		let absent = cluster::Peer::default();
-		assert_eq!(publisher.exclude(&absent), assigned, "so does declaring nothing");
-
-		let named = cluster::Peer {
-			hop: Some(declared),
-			cost: None,
-		};
-		assert_eq!(publisher.exclude(&named), declared, "a declared identity wins");
-	}
-
-	/// A peer that negotiated the extension MUST send a HOP_PATH on every advertisement,
-	/// and one that declared 0 names itself 0 there. An arriving chain is not rewritten,
-	/// so the route carries 0; the assigned identity stays on `via` and split-horizon
-	/// matches it, so the peer is not advertised its own route back.
-	#[tokio::test(start_paused = true)]
-	async fn a_declared_zero_chain_is_not_advertised_back() {
-		let assigned = crate::Hop::new(777).unwrap();
-		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
-		let consumer = origin.consume();
-
-		let publisher = Publisher::new(
-			crate::time::Clock::tokio(),
-			crate::lite::test_transport::SinkSession::new(Default::default()),
-			origin.consume(),
-			Control::new(None, false),
-			Some(assigned),
-			peer::PeerSetup::default(),
-			Version::Draft16,
-		);
-
-		// The chain as ingress stores it: the peer named itself 0, and `via` is the
-		// identity we assigned that session.
-		let mut hops = crate::Hops::new();
-		hops.push(crate::Hop::UNKNOWN).unwrap();
-		let _echoed = origin
-			.announce(
-				"from/peer",
-				crate::origin::Route::default().with_hops(hops).with_via(assigned),
-			)
-			.unwrap();
-
-		let peer = cluster::Peer {
-			hop: Some(crate::Hop::UNKNOWN),
-			cost: None,
-		};
-		let mut announced = consumer.excluding(publisher.exclude(&peer)).announced();
-		announced.assert_next_wait();
+		assert_eq!(publisher.select(&local), Advert::Plain);
 	}
 
 	/// A same-path source can splice into (or detach from) an existing broadcast
@@ -4981,7 +4741,6 @@ mod tests {
 		setup.set(peer::Peer {
 			solicit,
 			hidden: hidden_declared,
-			..Default::default()
 		});
 		let consume = match scoped {
 			true => origin
@@ -5186,48 +4945,6 @@ mod tests {
 		);
 	}
 
-	/// A namespace nobody can advertise any more is not pending, whatever happened before.
-	/// `deferred` outliving the want would arm the retry timer forever for a wire message
-	/// that can never happen: not a spin, but a session that never sleeps.
-	#[tokio::test(start_paused = true)]
-	async fn a_namespace_that_stops_being_advertisable_stops_being_deferred() {
-		let assigned = crate::Hop::new(777).unwrap();
-
-		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
-
-		// A route that already passed through us must never be forwarded: `select`
-		// wants nothing, which is what the peer already holds.
-		let mut hops = crate::Hops::new();
-		hops.push(crate::Hop::new(1).unwrap()).unwrap();
-
-		let session = crate::lite::test_transport::SinkSession::new(Default::default());
-		let publisher = Publisher::new(
-			crate::time::Clock::tokio(),
-			session,
-			origin.consume(),
-			Control::new(None, false),
-			Some(assigned),
-			declared(Some(false)),
-			Version::Draft17,
-		);
-
-		// The state a refused or failed offer leaves behind: the peer holds nothing, and
-		// the loop is coming back to it on a timer.
-		let suffix: crate::PathOwned = crate::Path::new("from/peer").to_owned();
-		let mut watch = Watched::new(crate::origin::Route::default().with_hops(hops));
-		watch.deferred = true;
-
-		let mut ns = Namespaces::new(cluster::Peer::default(), Target::Requests(None));
-		ns.watched.insert(suffix.clone(), watch);
-
-		publisher.sync_namespace(&mut ns, &suffix, &suffix).await.unwrap();
-
-		assert!(
-			!ns.watched[&suffix].deferred,
-			"the retry timer stays armed for a namespace that can never be advertised"
-		);
-	}
-
 	/// A minimum wait binds every path back to the namespace, not just the retry sweep.
 	/// A route change re-prices the advertisement; it does not excuse us from the wait the
 	/// peer asked for.
@@ -5283,250 +5000,6 @@ mod tests {
 		);
 
 		drop(cam);
-	}
-
-	/// A SETUP slot for a peer that negotiated the cluster extension, so an
-	/// advertisement carries a path and a cost worth repricing.
-	fn clustered(solicit: Option<bool>) -> peer::PeerSetup {
-		let slot = peer::PeerSetup::default();
-		slot.set(peer::Peer {
-			cluster: cluster::Peer {
-				hop: Some(crate::Hop::new(9).unwrap()),
-				cost: None,
-			},
-			solicit,
-			hidden: false,
-		});
-		slot
-	}
-
-	/// The bytes of one REQUEST_UPDATE, framed as the publisher writes it.
-	async fn request_update(version: Version, msg: &ietf::PublishNamespaceUpdate) -> Vec<u8> {
-		let log = crate::lite::test_transport::Log::default();
-		let mut writer = crate::coding::Writer::new(crate::lite::test_transport::SinkSend::new(log.clone()), version);
-		writer.encode(&ietf::PublishNamespaceUpdate::ID).await.unwrap();
-		writer.encode(msg).await.unwrap();
-		log.writes.lock().unwrap().clone()
-	}
-
-	/// A relay that starts carrying a namespace reprices it with REQUEST_UPDATE on the
-	/// request that already carries it, sending the changed parameter only. The new cost
-	/// is 0, which has to be explicit: REQUEST_UPDATE keeps an omitted parameter, so
-	/// leaving it out would keep the old price.
-	#[tokio::test]
-	async fn a_repricing_is_a_request_update() {
-		const VERSION: Version = Version::Draft19;
-
-		// Forward the update at once: the hold is not what this checks.
-		let origin = crate::origin::Config {
-			update_hold: Duration::ZERO,
-			..crate::origin::Config::new(crate::Hop::new(1).unwrap())
-		}
-		.produce();
-		let _cold = origin
-			.announce("cam", crate::origin::Route::default().with_cost(4))
-			.unwrap();
-		settle().await;
-
-		// One stream: the PUBLISH_NAMESPACE request and its update, each answered OK.
-		let ok = publish_namespace_ok(VERSION).await;
-		let session = crate::lite::test_transport::ScriptedSession::per_stream(vec![[ok.clone(), ok].concat()]);
-		let log = session.log.clone();
-
-		let publisher = Publisher::new(
-			crate::time::Clock::tokio(),
-			session,
-			origin.consume(),
-			Control::new(None, false),
-			None,
-			clustered(Some(false)),
-			VERSION,
-		);
-
-		let mut run = std::pin::pin!(publisher.run_publish_namespaces());
-		for _ in 0..100 {
-			assert!(futures::poll!(run.as_mut()).is_pending());
-			if occurrences(&log, b"cam") >= 1 {
-				break;
-			}
-			settle().await;
-		}
-		assert_eq!(occurrences(&log, b"cam"), 1, "the advertisement never went out");
-
-		// We start carrying it: a free route outranks the cold one.
-		let _warm = origin
-			.announce("cam", crate::origin::Route::default().with_cost(0))
-			.unwrap();
-
-		// The request consumed id 1, so the update takes the next of our parity. The
-		// path is unchanged and omitted; the cost is an explicit 0.
-		let expected = request_update(
-			VERSION,
-			&ietf::PublishNamespaceUpdate {
-				request_id: RequestId(3),
-				hops: None,
-				cost: Some(0),
-			},
-		)
-		.await;
-		for _ in 0..100 {
-			assert!(futures::poll!(run.as_mut()).is_pending());
-			if occurrences(&log, &expected) >= 1 {
-				break;
-			}
-			settle().await;
-		}
-
-		assert_eq!(occurrences(&log, &expected), 1, "REQUEST_UPDATE with an explicit 0");
-		assert_eq!(occurrences(&log, b"cam"), 1, "PUBLISH_NAMESPACE was not repeated");
-		assert_eq!(log.bi_opens(), 1, "the update rode the request's own stream");
-	}
-
-	/// A route from a different original publisher updates the advertisement in place,
-	/// like any other change: withdrawing it would make the namespace briefly vanish
-	/// downstream just because its publisher moved.
-	#[tokio::test]
-	async fn a_publisher_change_is_a_request_update() {
-		const VERSION: Version = Version::Draft19;
-
-		// Forward the update at once: the hold is not what this checks.
-		let origin = crate::origin::Config {
-			update_hold: Duration::ZERO,
-			..crate::origin::Config::new(crate::Hop::new(1).unwrap())
-		}
-		.produce();
-		let publisher_a = crate::Hops::try_from(vec![crate::Hop::new(7).unwrap()]).unwrap();
-		let publisher_b = crate::Hops::try_from(vec![crate::Hop::new(8).unwrap()]).unwrap();
-		let _from_a = origin
-			.announce(
-				"cam",
-				crate::origin::Route::default().with_hops(publisher_a).with_cost(4),
-			)
-			.unwrap();
-		settle().await;
-
-		// One stream: the advertisement from A and its update to B, each answered OK.
-		let ok = publish_namespace_ok(VERSION).await;
-		let session = crate::lite::test_transport::ScriptedSession::per_stream(vec![[ok.clone(), ok].concat()]);
-		let log = session.log.clone();
-
-		let publisher = Publisher::new(
-			crate::time::Clock::tokio(),
-			session,
-			origin.consume(),
-			Control::new(None, false),
-			None,
-			clustered(Some(false)),
-			VERSION,
-		);
-
-		let mut run = std::pin::pin!(publisher.run_publish_namespaces());
-		for _ in 0..100 {
-			assert!(futures::poll!(run.as_mut()).is_pending());
-			if occurrences(&log, b"cam") >= 1 {
-				break;
-			}
-			settle().await;
-		}
-		assert_eq!(occurrences(&log, b"cam"), 1, "the advertisement never went out");
-
-		// A cheaper route from B wins the selection.
-		let _from_b = origin
-			.announce(
-				"cam",
-				crate::origin::Route::default().with_hops(publisher_b).with_cost(0),
-			)
-			.unwrap();
-		let update = request_update(
-			VERSION,
-			&ietf::PublishNamespaceUpdate {
-				request_id: RequestId(3),
-				hops: Some(cluster::HopPath::new(
-					crate::Hops::try_from(vec![crate::Hop::new(8).unwrap(), crate::Hop::new(1).unwrap()]).unwrap(),
-				)),
-				cost: Some(0),
-			},
-		)
-		.await;
-		for _ in 0..100 {
-			assert!(futures::poll!(run.as_mut()).is_pending());
-			if occurrences(&log, &update) >= 1 {
-				break;
-			}
-			settle().await;
-		}
-
-		assert_eq!(occurrences(&log, &update), 1, "REQUEST_UPDATE carrying B's path");
-		assert_eq!(occurrences(&log, b"cam"), 1, "PUBLISH_NAMESPACE was not repeated");
-		assert_eq!(log.bi_opens(), 1, "no withdrawal and no second stream");
-	}
-
-	/// A peer that refuses an update closes the stream, which withdraws the
-	/// advertisement. The namespace is then not held at all, so it comes back as a fresh
-	/// PUBLISH_NAMESPACE once the refusal's wait is out, not as another update on a
-	/// stream the peer already ended.
-	#[tokio::test(start_paused = true)]
-	async fn a_refused_update_is_re_advertised_fresh() {
-		const VERSION: Version = Version::Draft19;
-
-		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
-		let _cold = origin
-			.announce("cam", crate::origin::Route::default().with_cost(4))
-			.unwrap();
-		settle().await;
-
-		// Stream 1 accepts the advertisement and refuses its update, with a wait shorter
-		// than the retry sweep; stream 2 accepts the fresh advertisement.
-		let ok = publish_namespace_ok(VERSION).await;
-		let refusal = publish_namespace_error(VERSION, 50).await;
-		let session =
-			crate::lite::test_transport::ScriptedSession::per_stream(vec![[ok.clone(), refusal].concat(), ok]);
-		let log = session.log.clone();
-
-		let publisher = Publisher::new(
-			crate::time::Clock::tokio(),
-			session,
-			origin.consume(),
-			Control::new(None, false),
-			None,
-			clustered(Some(false)),
-			VERSION,
-		);
-
-		let mut run = std::pin::pin!(publisher.run_publish_namespaces());
-		for _ in 0..100 {
-			assert!(futures::poll!(run.as_mut()).is_pending());
-			if occurrences(&log, b"cam") >= 1 {
-				break;
-			}
-			settle().await;
-		}
-		assert_eq!(occurrences(&log, b"cam"), 1, "the advertisement never went out");
-
-		let _warm = origin
-			.announce("cam", crate::origin::Route::default().with_cost(0))
-			.unwrap();
-
-		for _ in 0..100 {
-			assert!(futures::poll!(run.as_mut()).is_pending());
-			if occurrences(&log, b"cam") >= 2 {
-				break;
-			}
-			tick().await;
-		}
-
-		assert_eq!(occurrences(&log, b"cam"), 2, "re-advertised after the refusal");
-		assert_eq!(log.bi_opens(), 2, "on a fresh request stream");
-		let update = request_update(
-			VERSION,
-			&ietf::PublishNamespaceUpdate {
-				request_id: RequestId(3),
-				hops: None,
-				cost: Some(0),
-			},
-		)
-		.await;
-		assert_eq!(occurrences(&log, &update), 1, "only the one update was attempted");
 	}
 
 	/// Draft-17+ has no PUBLISH_NAMESPACE_DONE, so a withdrawal there is the FIN and

@@ -2,7 +2,6 @@ import { type Dispose, type Getter, race, Signal } from "@moq/signals";
 import type * as broadcast from "../broadcast.ts";
 import { controlTimeout, error, reason, StreamCode, StreamError } from "../error.ts";
 import type * as group from "../group.ts";
-import type { Hop, Route } from "../hop.ts";
 import { hiddenBelow, hooks, presented } from "../internal.ts";
 import type { Consumer as OriginConsumer } from "../origin.ts";
 import * as Path from "../path.ts";
@@ -13,7 +12,6 @@ import { TimeoutError, withTimeout } from "../util/timeout.ts";
 import * as Varint from "../varint.ts";
 import { type Advertised, type Advertisements, wireOf } from "../wire.ts";
 import type { Session } from "./adapter.ts";
-import * as Cluster from "./cluster.ts";
 import { type RequestKind, requestReason, toRequestCode } from "./error.ts";
 import { type Fetch, FetchError, FetchHeader } from "./fetch.ts";
 import * as Filter from "./filter.ts";
@@ -21,12 +19,7 @@ import { FetchFrame, Frame, Group as GroupMessage } from "./object.ts";
 import { fromWire, toWire } from "./priority.ts";
 import * as Properties from "./properties.ts";
 import { PublishDone, PublishDoneStatus } from "./publish.ts";
-import {
-	PublishNamespace,
-	PublishNamespaceDone,
-	PublishNamespaceOk,
-	PublishNamespaceUpdate,
-} from "./publish_namespace.ts";
+import { PublishNamespace, PublishNamespaceDone, PublishNamespaceOk } from "./publish_namespace.ts";
 import { RequestError, RequestOk } from "./request.ts";
 import { type Subscribe, SubscribeError, SubscribeOk } from "./subscribe.ts";
 import {
@@ -44,47 +37,9 @@ const RETRY_BASE = 100;
 /** Ceiling on that wait. The loop retries for the life of the session, so it must not spin. */
 const RETRY_MAX = 5000;
 
-/** Cluster parameters for one snapshot: the advertised hops, then our own id last. */
-function clusterFor(base: Cluster.Advert | undefined, route: Route): Cluster.Advert | undefined {
-	if (!base) return undefined;
-	const self = base.hops.at(-1);
-	if (self === undefined) return undefined;
-	const hops = route.hops.at(-1) === self ? [...route.hops] : [...route.hops, self];
-	return { hops, cost: route.cost.warm };
-}
-
-/**
- * What it takes to move the peer from `held` to `next`.
- *
- * - `"same"`: the peer would decode the same advertisement. The cold cost, and the whole
- *   route without Cluster, never reach the wire, so a change there sends nothing.
- * - `"restart"`: nothing is held, nothing is wanted, or a different broadcast, which is
- *   withdrawn and advertised again.
- * - Otherwise the same broadcast at a new hop chain or warm cost: the cluster parameters
- *   the peer holds and the ones it should, for the target to update.
- */
-function change(
-	base: Cluster.Advert | undefined,
-	held: Advertised | undefined,
-	next: Advertised | undefined,
-): "same" | "restart" | Reprice {
-	if (held === undefined || next === undefined || held.identity !== next.identity) return "restart";
-	const from = clusterFor(base, held.route);
-	const to = clusterFor(base, next.route);
-	if (from === undefined || to === undefined) return from === to ? "same" : "restart";
-	if (from.cost === to.cost && sameHops(from.hops, to.hops)) return "same";
-	return { from, to };
-}
-
-/** A held advertisement's cluster parameters, and the ones the peer should hold instead. */
-interface Reprice {
-	from: Cluster.Advert;
-	to: Cluster.Advert;
-}
-
-/** Whether two hop paths list the same hops in the same order. */
-function sameHops(a: Hop[], b: Hop[]): boolean {
-	return a.length === b.length && a.every((hop, i) => hop === b[i]);
+/** Whether the peer still holds the same broadcast. Routes never appear on this wire. */
+function change(held: Advertised | undefined, next: Advertised | undefined): "same" | "restart" {
+	return held !== undefined && next !== undefined && held.identity === next.identity ? "same" : "restart";
 }
 
 /**
@@ -134,9 +89,6 @@ interface Namespaces {
 interface Target {
 	/** Advertise a namespace the peer does not hold. */
 	advertise(key: Path.Valid, next: Advertised): Promise<Answer>;
-
-	/** Reprice a namespace the peer holds: the same broadcast at a new hop chain or cost. */
-	update(key: Path.Valid, next: Advertised, reprice: Reprice): Promise<Answer>;
 
 	/** Withdraw a namespace the peer holds. */
 	withdraw(key: Path.Valid): Promise<void>;
@@ -233,11 +185,6 @@ export class Publisher {
 	#advertised: Getter<Advertisements | undefined>;
 	#publish?: OriginConsumer;
 
-	// What every advertisement carries on a session that negotiated the MoQ Cluster
-	// extension: a hop path holding our own id, so the peer can tell that what it hears
-	// back came from us. `undefined` when nothing negotiated it.
-	#advert?: Cluster.Advert;
-
 	/**
 	 * Creates a new Publisher instance.
 	 *
@@ -249,7 +196,6 @@ export class Publisher {
 		publish,
 		requiresSolicitation,
 		hidden = false,
-		cluster,
 	}: {
 		/** The WebTransport session, for uni streams. */
 		quic: WebTransport;
@@ -261,8 +207,6 @@ export class Publisher {
 		requiresSolicitation: boolean;
 		/** Whether the peer declared MoQ Hidden. */
 		hidden?: boolean;
-		/** The Hop IDs the SETUP exchange settled (MoQ Cluster). */
-		cluster?: Cluster.Hops;
 	}) {
 		this.#quic = quic;
 		this.#session = session;
@@ -271,7 +215,6 @@ export class Publisher {
 		this.#publish = publish;
 		this.#requiresSolicitation = requiresSolicitation;
 		this.#hidden = hidden;
-		this.#advert = Cluster.advertise(cluster);
 	}
 
 	/**
@@ -835,22 +778,18 @@ export class Publisher {
 			// replacement, so repricing one is just sending it again, a new original
 			// publisher included, as Rust does. Only a legacy PUBLISH_NAMESPACE request can
 			// be declined.
-			const namespace = async (suffix: Path.Valid, snap: Advertised): Promise<Answer> => {
+			const namespace = async (suffix: Path.Valid, _snap: Advertised): Promise<Answer> => {
 				await stream.writer.u53(SubscribeNamespaceEntry.id);
-				const cluster = clusterFor(this.#advert, snap.route);
-				await new SubscribeNamespaceEntry({ suffix, cluster }).encode(stream.writer, version);
+				await new SubscribeNamespaceEntry({ suffix }).encode(stream.writer, version);
 				return "held";
 			};
 			const target: Target = legacy
 				? {
-						advertise: (suffix, snap) =>
-							this.#advertise(Path.join(prefix, suffix), requests, clusterFor(this.#advert, snap.route)),
-						update: (suffix, _snap, reprice) => this.#update(Path.join(prefix, suffix), requests, reprice),
+						advertise: (suffix, _snap) => this.#advertise(Path.join(prefix, suffix), requests),
 						withdraw: (suffix) => this.#withdraw(Path.join(prefix, suffix), requests),
 					}
 				: {
 						advertise: namespace,
-						update: namespace,
 						withdraw: async (suffix) => {
 							await stream.writer.u53(SubscribeNamespaceEntryDone.id);
 							await new SubscribeNamespaceEntryDone({ suffix }).encode(stream.writer, version);
@@ -922,8 +861,7 @@ export class Publisher {
 		// The open PUBLISH_NAMESPACE request per advertised path.
 		const requests: Requests = new Map();
 		const target: Target = {
-			advertise: (path, snap) => this.#advertise(path, requests, clusterFor(this.#advert, snap.route)),
-			update: (path, _snap, reprice) => this.#update(path, requests, reprice),
+			advertise: (path, _snap) => this.#advertise(path, requests),
 			withdraw: (path) => this.#withdraw(path, requests),
 		};
 
@@ -1016,24 +954,18 @@ export class Publisher {
 
 		const held = new Map(ns.active);
 		for (const [key, snap] of ns.active) {
-			if (change(this.#advert, snap, updated.get(key)) !== "restart") continue;
+			if (change(snap, updated.get(key)) !== "restart") continue;
 			await target.withdraw(key);
 			held.delete(key);
 		}
 
 		for (const [key, snap] of updated) {
 			const prev = held.get(key);
-			const diff = change(this.#advert, prev, snap);
+			const diff = change(prev, snap);
 			if (diff === "same") continue;
 
-			let answer: Answer;
-			if (prev !== undefined && diff !== "restart") {
-				answer = await target.update(key, snap, diff);
-			} else {
-				// A fresh offer waits for what a refusal asked for, whatever brought us back.
-				if (!this.#offerable(key, ns.refused)) continue;
-				answer = await target.advertise(key, snap);
-			}
+			if (!this.#offerable(key, ns.refused)) continue;
+			const answer = await target.advertise(key, snap);
 			// `offered` pairs with `refused`, so a held or withdrawn path leaves nothing behind.
 			if (answer === "held") {
 				held.set(key, snap);
@@ -1054,7 +986,7 @@ export class Publisher {
 		// failure clearing, or the peer starting to answer raises no signal of its own, so
 		// the only way back is to ask again on a timer.
 		return [...updated].some(
-			([key, snap]) => change(this.#advert, held.get(key), snap) !== "same" && this.#pending(key, ns.refused),
+			([key, snap]) => change(held.get(key), snap) !== "same" && this.#pending(key, ns.refused),
 		);
 	}
 
@@ -1100,11 +1032,7 @@ export class Publisher {
 	 * is logged and skipped: a peer that wants none of this rejects each one and stays
 	 * connected.
 	 */
-	async #advertise(
-		path: Path.Valid,
-		requests: Requests,
-		cluster: Cluster.Advert | undefined = this.#advert,
-	): Promise<Answer> {
+	async #advertise(path: Path.Valid, requests: Requests): Promise<Answer> {
 		const requestId = await this.#session.nextRequestId();
 		if (requestId === undefined) return "dropped";
 
@@ -1124,7 +1052,7 @@ export class Publisher {
 			const answer = await withTimeout(
 				(async (): Promise<Answer> => {
 					await stream.writer.u53(PublishNamespace.id);
-					const msg = new PublishNamespace({ requestId, trackNamespace: path, cluster });
+					const msg = new PublishNamespace({ requestId, trackNamespace: path });
 					await msg.encode(stream.writer, this.#session.version);
 
 					// Read response (RequestOk and PublishNamespaceOk share 0x07)
@@ -1166,71 +1094,6 @@ export class Publisher {
 			return "dropped";
 		}
 	}
-
-	/**
-	 * Update a namespace the peer holds: REQUEST_UPDATE on the request that carries it,
-	 * with only the parameters that changed, then its answer.
-	 *
-	 * Waiting for the answer keeps one update outstanding per stream, which satisfies any
-	 * MAX_REQUEST_UPDATES the peer set without reading it; a change landing meanwhile waits
-	 * for the next turn. The answer decides whether the peer still holds the namespace: a
-	 * REQUEST_ERROR closes the peer's side and withdraws the advertisement, so ours is
-	 * finished too, and an unanswered update is dropped abruptly, since a peer that ignored
-	 * it cannot be assumed to hold either price. Either way the retry re-offers it fresh.
-	 *
-	 * A different original publisher is an update like any other: the receiver drains what
-	 * it already serves from the old one and never splices the two.
-	 */
-	async #update(path: Path.Valid, requests: Requests, { from, to }: Reprice): Promise<Answer> {
-		const request = requests.get(path);
-		if (!request) return "dropped";
-
-		const update: Cluster.Update = {
-			hops: sameHops(from.hops, to.hops) ? undefined : to.hops,
-			cost: from.cost === to.cost ? undefined : to.cost,
-		};
-		const version = this.#session.version;
-		let answer: Answer;
-		try {
-			const requestId = await this.#session.nextRequestId();
-			if (requestId === undefined) throw new Error("no request ID for the update");
-
-			answer = await withTimeout(
-				(async (): Promise<Answer> => {
-					const { writer, reader } = request.stream;
-					await writer.u53(PublishNamespaceUpdate.id);
-					await new PublishNamespaceUpdate({ requestId, update }).encode(writer, version);
-
-					const typeId = await reader.u53();
-					if (typeId === RequestError.id) {
-						const err = await RequestError.decode(reader, version);
-						const why = requestReason(err.errorCode, err.reasonPhrase, "publish_namespace", version);
-						console.warn(`publish_namespace update refused: broadcast=${path} error=${why}`);
-						return this.#refusal(err);
-					}
-					if (typeId !== RequestOk.id) {
-						throw new Error(`unexpected answer to the update: typeId=0x${typeId.toString(16)}`);
-					}
-					await RequestOk.decode(reader, version);
-					return "held";
-				})(),
-				ADVERTISE_TIMEOUT_MS,
-				`update timed out after ${ADVERTISE_TIMEOUT_MS}ms waiting for the peer's answer`,
-			);
-		} catch (err: unknown) {
-			const e = err instanceof TimeoutError ? controlTimeout(err) : error(err);
-			console.warn(`publish_namespace update failed: broadcast=${path} error=${reason(e)}`);
-			requests.delete(path);
-			request.stream.abort(e);
-			return "dropped";
-		}
-
-		// The peer already closed out a refused request, and its STOP_SENDING can reject the
-		// wait on our FIN. That is the withdrawal finishing, not a reason to end the loop.
-		if (answer !== "held") await this.#withdraw(path, requests).catch(() => undefined);
-		return answer;
-	}
-
 	/**
 	 * Close out a namespace's PUBLISH_NAMESPACE request with PUBLISH_NAMESPACE_DONE.
 	 */
