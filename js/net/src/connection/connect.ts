@@ -156,7 +156,7 @@ export async function connect({ url, ...props }: ConnectProps): Promise<Establis
 		}
 
 		// Close a connection that settles after the abort.
-		pending.then((conn) => conn.close()).catch(() => {});
+		pending.then((conn) => conn.abort()).catch(() => {});
 		throw signal.reason;
 	} finally {
 		signal.removeEventListener("abort", onAbort);
@@ -297,7 +297,7 @@ async function negotiate(url: URL, session: WebTransport, wiring: SessionProps):
 		throw new Error(`unsupported WebTransport protocol: ${protocol}`);
 	}
 
-	const stream = await Stream.open(session);
+	const stream = await Stream.open(session, { version: setupVersion });
 	await stream.writer.u53(Lite.StreamId.ClientCompat);
 
 	const encoder = new TextEncoder();

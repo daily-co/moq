@@ -12,8 +12,8 @@ relay serves video, audio, and data alike.
 ## Features
 
 - **QUIC, WebTransport, and WebSocket** listeners, so browsers and native clients connect to one process.
-- **Path-scoped authentication** with JWTs, mTLS for peers, anonymous prefixes, and an optional auth API for dynamic policy. See [Authentication](/bin/relay/auth).
-- **Clustering** across hosts and regions with hop-list routing, per-link costs, gossip discovery, and dynamic peer lists. See [Clustering](/bin/relay/cluster).
+- **Path-scoped authentication** with JWTs, mTLS for peers, and anonymous patterns, decided by an auth server or a static grant. See [Authentication](/bin/relay/auth).
+- **Clustering** across hosts and regions with hop-list routing, per-link costs, LAN discovery, and dynamic peer lists. See [Clustering](/bin/relay/cluster).
 - **A group cache** with byte and age budgets, so late joiners and the HLS gateway can fetch recent history.
 - **HTTP endpoints** to list broadcasts, fetch groups, probe health, and scrape Prometheus metrics. See [HTTP](/bin/relay/http).
 - **Live stats** published as MoQ tracks per node and per tenant, split by billing tier.
@@ -27,6 +27,9 @@ cargo install moq-relay          # or brew, apt, dnf, winget, docker; see Instal
 moq-relay relay.toml
 ```
 
+The `.deb` and `.rpm` systemd service reads `/etc/moq-relay/relay.toml`
+using the same positional config argument.
+
 The relay takes one TOML file. A local development config:
 
 ```toml
@@ -38,7 +41,7 @@ tls.generate = ["localhost"]
 listen = "[::]:4443"   # serves the certificate fingerprint for local browsers
 
 [auth]
-public = ""            # anonymous access to everything; development only
+public = "**"          # anonymous access to everything; development only
 ```
 
 Every option is also a `--flag` or `MOQ_*` environment variable, and
@@ -66,8 +69,9 @@ let web = relay.web().routes().route("/hello", get(|| async { "hello" }));
 relay.with_web(web).run().await?;
 ```
 
-`Relay::load` binds QUIC and web sockets. Read their actual addresses with
-`quic_addr()` and `web_addrs()`, including ports assigned for `:0`. Clone
+`Relay::load` binds every socket, so a taken port fails there. Read the actual
+addresses with `quic_addr()`, `tcp_addr()`, `web_addrs()`, and
+`internal().addr()`, including ports assigned for `:0`. Clone
 `ready()` before spawning `run`, then await `ready.wait()` when startup must
 finish before other workers begin. `config()` returns the resolved settings;
 `cluster().id()` returns the chosen origin ID. `with_listeners()` registers an

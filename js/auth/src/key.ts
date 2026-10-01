@@ -3,11 +3,13 @@ import * as z from "@zod/mini";
 import * as jose from "jose";
 import { type Algorithm, AlgorithmSchema } from "./algorithm.ts";
 import { type Claims, ClaimsSchema, ScopeSchema, scopeAllows } from "./claims.ts";
+import { encodeGrants } from "./wire.ts";
 
 /**
- * A validated key identifier (kid). Only alphanumeric, hyphens, and underscores.
+ * A validated key identifier (kid). At most 128 alphanumeric, hyphen, or underscore characters.
  */
 export const KeyIdSchema = z.string().check(
+	z.maxLength(128),
 	z.refine((value) => /^[A-Za-z0-9_-]+$/.test(value), {
 		message: "Key ID must contain only alphanumeric characters, hyphens, and underscores",
 	}),
@@ -185,16 +187,19 @@ function parse(jwk: string): Key {
 async function sign(key: Key, claims: Claims): Promise<string> {
 	ensureOperationSupported(key, "sign");
 
-	// Validate claims before signing
+	// Scope-check and sign what the schema parsed, never the raw input: an untyped
+	// caller could pass legacy `put`/`get` fields the scope check would not see.
+	let parsed: Claims;
 	try {
-		ClaimsSchema.parse(claims);
+		parsed = ClaimsSchema.parse(claims);
 	} catch (error) {
 		throw new Error(`Invalid claims: ${error instanceof Error ? error.message : "unknown error"}`);
 	}
-	ensureClaimsWithinScope(key, claims);
+	ensureClaimsWithinScope(key, parsed);
 
 	const joseKey = await importJoseKey(key);
-	const jwt = await new jose.SignJWT(claims)
+	// Written the legacy way when that says the same thing, so older verifiers accept it.
+	const jwt = await new jose.SignJWT(encodeGrants(parsed))
 		.setProtectedHeader({
 			alg: key.alg,
 			typ: "JWT",
@@ -216,7 +221,7 @@ async function decode(key: PublicKey | SymmetricKey, token: string): Promise<unk
 	return JSON.parse(new TextDecoder().decode(payload));
 }
 
-/** Verify a token's signature and this crate's strict claims, expiry, and key scope. */
+/** Verify a token's signature and this crate's strict claims, expiry, not-before, and key scope. */
 async function verify(key: PublicKey | SymmetricKey, token: string): Promise<Claims> {
 	const payload = await decode(key, token);
 	let claims: Claims;
@@ -225,7 +230,9 @@ async function verify(key: PublicKey | SymmetricKey, token: string): Promise<Cla
 	} catch (error) {
 		throw new Error(`Failed to parse token claims: ${error instanceof Error ? error.message : "unknown error"}`);
 	}
-	if (claims.exp !== undefined && claims.exp <= Date.now() / 1000) throw new Error("Token has expired");
+	const now = Date.now() / 1000;
+	if (claims.exp !== undefined && claims.exp <= now) throw new Error("Token has expired");
+	if (claims.nbf !== undefined && claims.nbf > now) throw new Error("Token is not yet valid");
 	ensureClaimsWithinScope(key, claims);
 	return claims;
 }

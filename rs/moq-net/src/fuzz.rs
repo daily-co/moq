@@ -13,7 +13,7 @@
 use bytes::Buf;
 
 use crate::{
-	Path, Pattern,
+	Hops, Path, PathOwned, Pattern,
 	coding::{Decode, Encode, VarInt},
 	ietf, lite,
 	path::Relative,
@@ -26,6 +26,7 @@ pub type Target = fn(&[u8]) -> bool;
 /// Every target, keyed by the name of its `fuzz_targets/<name>.rs` shim.
 pub const TARGETS: &[(&str, Target)] = &[
 	("lite", lite_wire),
+	("announce", announce_stream),
 	("ietf", ietf_wire),
 	("varint", varint),
 	("path", path),
@@ -60,7 +61,7 @@ const IETF_VERSIONS: &[ietf::Version] = &[
 const LITE_KINDS: u8 = 21;
 
 /// How many types [`ietf_wire`] dispatches over.
-const IETF_KINDS: u8 = 39;
+const IETF_KINDS: u8 = 40;
 
 /// Split the two selector bytes off the input: a version and a type.
 fn select(data: &[u8], versions: usize) -> Option<(usize, u8, &[u8])> {
@@ -154,6 +155,232 @@ pub fn lite_wire(data: &[u8]) -> bool {
 	}
 }
 
+/// One announcement on an announce stream, resolved: what the application sees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Announced {
+	/// ANNOUNCE_START: a route's suffix and wire hop chain, taking the next id.
+	Start(PathOwned, Hops),
+	/// ANNOUNCE_UPDATE: a live id's new wire hop chain.
+	Update(u64, Hops),
+	/// ANNOUNCE_END: a live id retired.
+	End(u64),
+}
+
+fn announce_version(compress: bool) -> lite::Version {
+	match compress {
+		true => lite::Version::Lite07,
+		false => lite::Version::Lite06,
+	}
+}
+
+/// One publisher's side of an announce stream: lite-07 with compression, or lite-06
+/// literal framing.
+pub struct AnnounceWriter {
+	version: lite::Version,
+	encoder: lite::AnnounceEncoder,
+}
+
+impl AnnounceWriter {
+	/// A new stream, with nothing live.
+	pub fn new(compress: bool) -> Self {
+		let version = announce_version(compress);
+		Self {
+			version,
+			encoder: lite::AnnounceEncoder::new(version),
+		}
+	}
+
+	/// Append one announcement to `data`. An update or end must name a live id.
+	pub fn write(&mut self, announced: &Announced, data: &mut Vec<u8>) {
+		let msg = match announced {
+			Announced::Start(suffix, hops) => {
+				let (_, suffix, hops) = self.encoder.start(suffix.clone(), hops.clone());
+				lite::AnnounceBroadcast::Active {
+					suffix,
+					hops,
+					cost: Default::default(),
+				}
+			}
+			Announced::Update(id, hops) => lite::AnnounceBroadcast::Restart {
+				id: *id,
+				hops: self.encoder.update(*id, hops.clone()),
+				cost: Default::default(),
+			},
+			Announced::End(id) => {
+				self.encoder.end(*id);
+				lite::AnnounceBroadcast::EndedId { id: *id }
+			}
+		};
+		msg.encode(data, self.version)
+			.expect("could not encode an announcement");
+	}
+}
+
+/// Encode `announced` as a fresh [`AnnounceWriter`] stream.
+pub fn encode_announces(announced: &[Announced], compress: bool) -> Vec<u8> {
+	let mut writer = AnnounceWriter::new(compress);
+	let mut data = Vec::new();
+	for announced in announced {
+		writer.write(announced, &mut data);
+	}
+	data
+}
+
+/// Decode and resolve an announce stream, as [`encode_announces`] writes it, stopping
+/// at the first message that fails to decode or resolve: a subscriber closes the
+/// session there.
+pub fn decode_announces(mut data: &[u8], compress: bool) -> Vec<Announced> {
+	let version = announce_version(compress);
+	let mut decoder = lite::AnnounceDecoder::default();
+	let mut resolved = Vec::new();
+	while let Ok(msg) = lite::AnnounceBroadcast::decode(&mut data, version) {
+		let announced = match msg {
+			lite::AnnounceBroadcast::Active { suffix, hops, .. } => decoder
+				.start(suffix, hops)
+				.map(|(suffix, hops)| Announced::Start(suffix, hops)),
+			lite::AnnounceBroadcast::Restart { id, hops, .. } => {
+				decoder.update(id, hops).map(|(_, hops)| Announced::Update(id, hops))
+			}
+			lite::AnnounceBroadcast::EndedId { id } => decoder.end(id).map(|_| Announced::End(id)),
+			_ => continue,
+		};
+		let Ok(announced) = announced else {
+			break;
+		};
+		resolved.push(announced);
+	}
+	resolved
+}
+
+/// A varint-heavy lite wire object, as the varint bench times it: what a publisher
+/// pays per frame, per group, and per request.
+#[derive(Clone, Copy, Debug)]
+pub enum LiteSample {
+	/// A 30 fps video group's FRAME headers: a zigzag timestamp delta in microseconds and
+	/// a size, 60 of them, led by a 60 KB keyframe. Payloads are left out.
+	Video,
+	/// A 50 Hz Opus group's FRAME headers: 50 of 20 ms and 160 bytes.
+	Audio,
+	/// A GROUP header, well into a long-running track.
+	Group,
+	/// A SUBSCRIBE for a track, the way a player opens one.
+	Subscribe,
+	/// A datagram's header, with an empty payload.
+	Datagram,
+	/// A SETUP declaring a probe level, a cost, and a random Hop ID.
+	Setup,
+}
+
+impl LiteSample {
+	/// Every sample, in the order the bench reports them.
+	pub const ALL: [Self; 6] = [
+		Self::Video,
+		Self::Audio,
+		Self::Group,
+		Self::Subscribe,
+		Self::Datagram,
+		Self::Setup,
+	];
+
+	/// The FRAME headers for [`Self::Video`] and [`Self::Audio`], as (delta, size) pairs.
+	fn frames(self) -> Vec<(i64, u64)> {
+		match self {
+			Self::Video => (0..60)
+				.map(|n| match n {
+					0 => (0, 60_000),
+					n if n % 10 == 0 => (33_333, 17_000),
+					_ => (33_333, 8_000),
+				})
+				.collect(),
+			Self::Audio => (0..50).map(|n| (if n == 0 { 0 } else { 20_000 }, 160)).collect(),
+			_ => Vec::new(),
+		}
+	}
+
+	/// Encode this sample at `version`, which must be a moq-lite version.
+	pub fn encode(self, version: crate::Version) -> Vec<u8> {
+		let version = lite::Version::try_from(version).expect("a moq-lite version");
+		let mut buf = Vec::new();
+		match self {
+			Self::Video | Self::Audio => {
+				for (delta, size) in self.frames() {
+					VarInt::from_zigzag(delta).unwrap().encode(&mut buf, version).unwrap();
+					size.encode(&mut buf, version).unwrap();
+				}
+			}
+			Self::Group => lite::Group {
+				subscribe: 3,
+				sequence: 1_234,
+				frame_start: 0,
+			}
+			.encode(&mut buf, version)
+			.unwrap(),
+			Self::Subscribe => lite::Subscribe {
+				id: 3,
+				broadcast: Path::new("room/alice"),
+				track: "video".into(),
+				priority: 2,
+				max_age: std::time::Duration::from_secs(10),
+				start_group: None,
+				end_group: None,
+				start_frame: 0,
+				end_frame: None,
+			}
+			.encode(&mut buf, version)
+			.unwrap(),
+			Self::Datagram => lite::Datagram {
+				subscribe: 3,
+				sequence: 1_234,
+				timestamp: 1_234_567_890,
+				payload: bytes::Bytes::new(),
+			}
+			.encode(&mut buf, version)
+			.unwrap(),
+			Self::Setup => lite::Setup {
+				probe: lite::ProbeLevel::Report,
+				cost: Some(1),
+				hop: Some(crate::Hop::new(0x1d_2c3b_4a59_6877).unwrap()),
+				..Default::default()
+			}
+			.encode(&mut buf, version)
+			.unwrap(),
+		}
+		buf
+	}
+
+	/// Decode what [`Self::encode`] wrote at `version`, returning how many objects it read.
+	pub fn decode(self, version: crate::Version, mut data: &[u8]) -> usize {
+		let version = lite::Version::try_from(version).expect("a moq-lite version");
+		let data = &mut data;
+		match self {
+			Self::Video | Self::Audio => {
+				let mut frames = 0;
+				while !data.is_empty() {
+					VarInt::decode(data, version).unwrap();
+					u64::decode(data, version).unwrap();
+					frames += 1;
+				}
+				frames
+			}
+			Self::Group => lite::Group::decode(data, version).map(|_| 1).unwrap(),
+			Self::Subscribe => lite::Subscribe::decode(data, version).map(|_| 1).unwrap(),
+			Self::Datagram => lite::Datagram::decode(data, version).map(|_| 1).unwrap(),
+			Self::Setup => lite::Setup::decode(data, version).map(|_| 1).unwrap(),
+		}
+	}
+}
+
+/// Feed a lite-07 announce stream through the stateful decoder, then check that our
+/// encoder's compression of what it resolved reads back as the same announcements.
+///
+/// Returns whether anything resolved.
+pub fn announce_stream(data: &[u8]) -> bool {
+	let resolved = decode_announces(data, true);
+	let echo = decode_announces(&encode_announces(&resolved, true), true);
+	assert_eq!(echo, resolved, "compression did not survive a round trip");
+	!resolved.is_empty()
+}
+
 /// Decode one IETF moq-transport wire object from arbitrary bytes.
 ///
 /// Byte 0 picks the negotiated draft, byte 1 the object type, and the rest is the
@@ -209,19 +436,21 @@ pub fn ietf_wire(data: &[u8]) -> bool {
 		36 => roundtrip::<ietf::Location, _>(rest, version, stable),
 		37 => roundtrip::<ietf::FetchObject, _>(rest, version, stable),
 		38 => roundtrip::<ietf::PublishNamespaceUpdate, _>(rest, version, stable),
+		39 => roundtrip::<ietf::ObjectDatagram, _>(rest, version, stable),
 		_ => unreachable!("kind is taken modulo IETF_KINDS"),
 	}
 }
 
 /// Decode a varint with whichever codec the selected version uses.
 ///
-/// Byte 0 picks the version, which is the whole point: moq-lite and drafts 14-16 use
-/// the QUIC two-bit length tag, while draft-17+ counts leading ones, and the two
-/// disagree about which byte sequences are even legal.
+/// Byte 0 picks the version, which is the whole point: lite-01 to lite-06 and drafts
+/// 14-16 use the QUIC two-bit length tag, while lite-07 and draft-17+ count leading
+/// ones, and the two disagree about which byte sequences are even legal.
 ///
-/// The decoded value is deliberately not asserted to be within [`VarInt::MAX`]: the
-/// leading-ones form spans the full `u64` by design, so a 9-byte encoding decodes
-/// above the 62-bit ceiling and only fails when re-encoded for a QUIC-form version.
+/// The decoded value is deliberately not asserted to be within [`VarInt::MAX`]: on the
+/// IETF wire the leading-ones form spans the full `u64` by design, so a 9-byte encoding
+/// decodes above the 62-bit ceiling. Lite-07 allows the same range, but refuses it at
+/// decode until `VarInt` widens to 64 bits.
 pub fn varint(data: &[u8]) -> bool {
 	let Some((&selector, rest)) = data.split_first() else {
 		return false;
@@ -514,6 +743,28 @@ pub fn seeds() -> Vec<Seed> {
 			target: "ietf",
 			kind: 19,
 			data,
+		});
+	}
+
+	// Announce streams from our own encoder: routes sharing path heads and relay tails,
+	// with retractions and updates moving the bases around.
+	let mut announced = Vec::new();
+	let hop = |id: u64| crate::Hop::new(id).expect("a valid hop");
+	for n in 0..12u64 {
+		let suffix = PathOwned::from(format!("pid{}/private/channel_{}/health-{n}", n % 3, n % 2));
+		let hops = Hops::try_from(vec![hop(100 + n % 3), hop(1 << 40), hop(1 << 41)]).expect("valid hops");
+		announced.push(Announced::Start(suffix, hops));
+		if n % 4 == 3 {
+			let hops = Hops::try_from(vec![hop(200), hop(1 << 41)]).expect("valid hops");
+			announced.push(Announced::Update(n, hops));
+		}
+		if n % 5 == 4 {
+			announced.push(Announced::End(n));
+		}
+		seeds.push(Seed {
+			target: "announce",
+			kind: 0,
+			data: encode_announces(&announced, true),
 		});
 	}
 

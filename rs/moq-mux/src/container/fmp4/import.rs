@@ -540,11 +540,19 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 				config
 			}
 			mp4_atom::Codec::Opus(opus) => {
-				let mut config = AudioConfig::new(
-					AudioCodec::Opus,
-					opus.audio.sample_rate.integer() as _,
-					opus.audio.channel_count as _,
-				);
+				// dOps carries the OpusHead fields in ISOBMFF byte order; republish them as the
+				// OpusHead description so decoders apply its pre-skip and gain. mp4-atom already
+				// refuses a nonzero channel mapping family, so the table is never dropped here.
+				let dops = &opus.dops;
+				let mut head =
+					crate::codec::opus::Config::new(dops.input_sample_rate, dops.output_channel_count as u32)
+						.with_pre_skip(dops.pre_skip);
+				head.output_gain = dops.output_gain;
+
+				// The catalog describes the decoder's output: Opus always decodes at 48 kHz, whatever
+				// the sample entry or the informational input rate claims.
+				let mut config = AudioConfig::new(AudioCodec::Opus, 48_000, head.channel_count);
+				config.description = Some(head.encode()?);
 				config.container = container;
 				config
 			}
@@ -698,8 +706,8 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 			let default_sample_flags = trex.map(|trex| trex.default_sample_flags).unwrap_or_default();
 
 			let tfdt = traf.tfdt.as_ref().ok_or(Error::MissingTfdt)?;
-			let mut dts = tfdt.base_media_decode_time;
 			let timescale = moq_net::Timescale::new(trak.mdia.mdhd.timescale as u64)?;
+			let mut dts = tfdt.base_media_decode_time;
 
 			// Every fragment restates its decode time, so a stale one puts two different samples
 			// on the same timestamp, which reads downstream as an undeclared hole.
@@ -897,6 +905,13 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 
 			let fragment_bytes = Bytes::from(moof_buf);
 
+			// Carry the fragment's earliest presentation time as the frame timestamp,
+			// in the track's native timescale. The relay reads it off the wire; the
+			// consumer still drives playback from the fragment's internal timing.
+			let timestamp = min_timestamp.ok_or(Error::MissingTrun)?;
+			// The first fragment of the import is live on arrival.
+			self.catalog.anchor(timestamp)?;
+
 			// Write the per-track fragment as a single MoQ frame (passthrough). The group rolls
 			// once per segment, so a group is a segment and the fragments inside it are frames.
 			// The keyframe bit no longer decides that: audio flags every sample a sync sample, so
@@ -915,11 +930,6 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 			} else {
 				track.group.take().ok_or(Error::NoKeyframe)?
 			};
-
-			// Carry the fragment's earliest presentation time as the frame timestamp,
-			// in the track's native timescale. The relay reads it off the wire; the
-			// consumer still drives playback from the fragment's internal timing.
-			let timestamp = min_timestamp.ok_or(Error::MissingTrun)?;
 
 			if start_group {
 				// A group just opened; report it so the broadcast's timeline can index the segment
@@ -1003,7 +1013,9 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 	/// Close the current group on every track and open the next one at `sequence`.
 	///
 	/// Broadcast-wide: every track inside this fMP4 import advances together; per-track
-	/// control is intentionally not exposed.
+	/// control is intentionally not exposed. Skipping sequences is not a new timeline, so the
+	/// next fragment must still advance past the last decode time; see
+	/// [`discontinuity`](Self::discontinuity).
 	pub fn seek(&mut self, sequence: u64) -> Result<()> {
 		for track in self.tracks.values_mut() {
 			track.estimator.cut(None);
@@ -1012,9 +1024,16 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 				g.finish()?;
 			}
 			track.pending_sequence = Some(sequence);
-			track.last_decode_time = None;
 		}
 		Ok(())
+	}
+
+	/// The source signalled a new timeline (an HLS `EXT-X-DISCONTINUITY`), so the next
+	/// fragment's decode time is not compared with the last one on each track.
+	pub fn discontinuity(&mut self) {
+		for track in self.tracks.values_mut() {
+			track.last_decode_time = None;
+		}
 	}
 }
 

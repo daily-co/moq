@@ -197,8 +197,7 @@ impl Workers {
 		while let Some(member) = group.member().context("failed to clone a reuseport member")? {
 			members.push(member);
 		}
-		// Whatever the first member bound, which is the requested address unless
-		// it asked for an ephemeral port.
+		// The requested address, with an ephemeral port resolved.
 		let addr = group.addr();
 
 		// The moq-lite ALPNs this listener speaks: the operator's version
@@ -758,7 +757,6 @@ async fn serve_connection(
 		stats,
 	} = admitted;
 
-	let peer_hop = request.peer_hop();
 	let mut request = request.with_stats(stats);
 	if let Some(subscriber) = subscriber {
 		request = request.with_publisher(subscriber);
@@ -774,7 +772,6 @@ async fn serve_connection(
 			err => tracing::debug!(%err, "session driver ended"),
 		}
 	});
-	let node_connection = peer_hop.map(|origin| serve.cluster.nodes.connect_inbound(id, origin));
 
 	tracing::info!(id, version = %session.version(), transport = %moq_tokio::Transport::Quic, "negotiated");
 
@@ -783,7 +780,6 @@ async fn serve_connection(
 	// and the shutdown broadcast on the shared runtime.
 	let shutdown = serve.shutdown.clone();
 	serve.tokio.spawn(async move {
-		let _node_connection = node_connection;
 		if let Err(err) = crate::connection::supervise(session, lease, shutdown, registration).await {
 			tracing::warn!(id, %err, "connection closed");
 		}

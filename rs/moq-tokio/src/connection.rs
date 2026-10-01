@@ -463,6 +463,9 @@ struct State {
 	/// The currently-connected session, or `None` while reconnecting. Read by
 	/// [`Monitor`] to snapshot live connection stats.
 	session: Option<moq_net::Session>,
+	/// The loop's [`Draining`] predecessor and its handover deadline, so
+	/// [`Connection::close`] drains it too without overstaying that window.
+	predecessor: Option<(moq_net::Session, tokio::time::Instant)>,
 }
 
 /// The producer side of everything a [`Connection`] handle can observe.
@@ -661,7 +664,7 @@ struct Task {
 	closed: CloseGuard,
 }
 
-/// Serializes [`Connection::abort`] against the loop publishing a fresh session.
+/// Serializes [`Connection::abort`] and [`Connection::close`] against the loop publishing a fresh session.
 ///
 /// Aborting a tokio task doesn't interrupt it before its next yield, so a redial
 /// completing in that window would otherwise hand [`Shared::connected`] a session
@@ -742,6 +745,47 @@ impl Connection {
 		self.task.handle.abort();
 	}
 
+	/// Stop the loop for every clone, closing the live session (and any predecessor
+	/// still finishing after a GOAWAY) once the data it queued has been delivered.
+	///
+	/// See [`moq_net::Session::close`]: finished tracks deliver their last groups and
+	/// FIN and announcements are withdrawn first, bounded by a one second deadline
+	/// (or a predecessor's remaining handover window, if sooner). Call this before
+	/// [`Client::close`], which closes the transport without waiting. Returns `Ok`
+	/// when nothing was live, and a session's error if it did not drain.
+	pub async fn close(self) -> crate::Result<()> {
+		// Refuse redials and take the sessions under one lock: see [`CloseGuard`].
+		let (session, predecessor) = {
+			let mut closed = self.task.closed.lock().unwrap();
+			*closed = Some(moq_net::Error::Cancel);
+			let state = self.state.read();
+			(state.session.clone(), state.predecessor.clone())
+		};
+		self.task.handle.abort();
+		let session = async move {
+			match session {
+				Some(session) => session.close().await,
+				None => Ok(()),
+			}
+		};
+		let predecessor = async move {
+			let Some((session, deadline)) = predecessor else {
+				return Ok(());
+			};
+			let abort = session.clone();
+			let mut close = std::pin::pin!(session.close());
+			tokio::select! {
+				res = &mut close => res,
+				_ = tokio::time::sleep_until(deadline) => {
+					abort.abort(moq_net::Error::GoawayTimeout);
+					close.await
+				}
+			}
+		};
+		let (session, predecessor) = tokio::join!(session, predecessor);
+		Ok(session.and(predecessor)?)
+	}
+
 	async fn run(shared: &Shared, client: Client, addrs: Addrs) -> crate::Result<()> {
 		let backoff = client.backoff.clone();
 		let goaway = client.goaway.resolve();
@@ -801,7 +845,7 @@ impl Connection {
 								if let Some(mut old) = draining.take() {
 									old.retire();
 								}
-								draining = Some(Draining::new(old, goaway.handover));
+								draining = Some(Draining::new(old, goaway.handover, &shared.state));
 								connected = tokio::time::Instant::now();
 							}
 						}
@@ -846,13 +890,15 @@ impl Connection {
 						// replacement at a group boundary. Tearing it down here instead
 						// would drop every group published until the replacement caught up.
 						tracing::info!(peer = %Endpoint(&url), "upstream GOAWAY; migrating");
-						shared.migrating();
 						// Retire any predecessor first: overwriting would drop its deadline
 						// on the floor and leave it holding the connection open.
 						if let Some(mut old) = draining.take() {
 							old.retire();
 						}
-						draining = Some(Draining::new(session, goaway.handover(msg.timeout())));
+						draining = Some(Draining::new(session, goaway.handover(msg.timeout()), &shared.state));
+						// After the predecessor is published, so a close woken by this
+						// status finds it and honors its handover deadline.
+						shared.migrating();
 
 						if healthy {
 							delay = initial;
@@ -1237,10 +1283,16 @@ struct Draining {
 	session: moq_net::Session,
 	closed: std::pin::Pin<Box<dyn Future<Output = ()> + Send>>,
 	deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+	/// Mirrors the session into [`State::predecessor`] for as long as this lives.
+	state: kio::Producer<State>,
 }
 
 impl Draining {
-	fn new(session: moq_net::Session, handover: Duration) -> Self {
+	fn new(session: moq_net::Session, handover: Duration, state: &kio::Producer<State>) -> Self {
+		let deadline = Box::pin(tokio::time::sleep(handover));
+		if let Ok(mut state) = state.write() {
+			state.predecessor = Some((session.clone(), deadline.deadline()));
+		}
 		let closed = {
 			let session = session.clone();
 			Box::pin(async move {
@@ -1251,7 +1303,8 @@ impl Draining {
 		Self {
 			session,
 			closed,
-			deadline: Box::pin(tokio::time::sleep(handover)),
+			deadline,
+			state: state.clone(),
 		}
 	}
 
@@ -1272,6 +1325,14 @@ impl Draining {
 			return true;
 		}
 		false
+	}
+}
+
+impl Drop for Draining {
+	fn drop(&mut self) {
+		if let Ok(mut state) = self.state.write() {
+			state.predecessor = None;
+		}
 	}
 }
 
@@ -1833,43 +1894,47 @@ mod tests {
 		value.parse().expect("valid url")
 	}
 
-	/// A loopback TCP port with nothing on it, which refuses instantly.
+	/// A loopback TCP port with nothing listening on it, which refuses instantly.
 	///
 	/// A dead address that *refuses* rather than black-holes is what keeps these
 	/// tests fast and deterministic: the walk itself is what's under test, and
 	/// bounding a black-holed attempt is covered by
 	/// [`only_a_candidate_with_a_fallback_is_bounded`] as a pure function.
+	///
+	/// The returned socket is bound but never listens, so the port refuses while
+	/// staying reserved: no other listener (or an ephemeral self-connect) can take
+	/// it mid-test. Hold it for as long as the URL is dialed.
 	#[cfg(feature = "tcp")]
-	fn refused() -> Url {
-		let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-		let port = probe.local_addr().expect("local addr").port();
-		drop(probe);
-		url(&format!("tcp://127.0.0.1:{port}/"))
+	fn refused() -> (tokio::net::TcpSocket, Url) {
+		let socket = tokio::net::TcpSocket::new_v4().expect("tcp socket");
+		socket.bind("127.0.0.1:0".parse().unwrap()).expect("bind");
+		let addr = socket.local_addr().expect("local addr");
+		(socket, url(&format!("tcp://{addr}/")))
 	}
 
-	/// A bound stream listener, the URL that reaches it, and a client for it.
+	/// A bound stream listener and the URL that reaches it.
 	#[cfg(feature = "tcp")]
-	fn pair() -> (crate::Server, Url, Client) {
+	async fn live() -> (crate::Listener, Url) {
+		let mut config = crate::listen::Config::default();
+		config.tcp.bind = Some("127.0.0.1:0".parse().unwrap());
+		let listener = config
+			.init(Default::default())
+			.expect("build server")
+			.listen()
+			.await
+			.expect("listen");
+		let addr = listener.tcp_local_addr().expect("tcp listener bound");
+		(listener, url(&format!("tcp://{addr}/")))
+	}
+
+	/// A client that trusts the self-signed [`live`] listener.
+	#[cfg(feature = "tcp")]
+	fn client() -> Client {
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-		for _ in 0..20 {
-			let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-			let port = probe.local_addr().expect("local addr").port();
-			drop(probe);
-
-			let mut config = crate::listen::Config::default();
-			config.tcp.bind = Some(format!("127.0.0.1:{port}").parse().expect("valid address"));
-			let Ok(server) = config.init(Default::default()) else {
-				continue;
-			};
-
-			let mut config = crate::connect::Config::default();
-			config.tls.insecure = Some(true);
-			let client = config.init(Default::default()).expect("build client");
-
-			return (server, url(&format!("tcp://127.0.0.1:{port}/")), client);
-		}
-		panic!("could not bind a free TCP port after 20 attempts");
+		let mut config = crate::connect::Config::default();
+		config.tls.insecure = Some(true);
+		config.init(Default::default()).expect("build client")
 	}
 
 	fn shared() -> Shared {
@@ -1887,11 +1952,13 @@ mod tests {
 	#[cfg(feature = "tcp")]
 	#[tokio::test]
 	async fn dial_any_walks_past_the_dead_addresses() {
-		let (server, live, client) = pair();
-		let mut server = server.listen().await.expect("listen");
+		let client = client();
+		let (mut server, live) = live().await;
 		tokio::spawn(async move { while server.accept().await.is_some() {} });
 
-		let addrs = Addrs::collect([refused(), refused(), live.clone()]).expect("not empty");
+		let (_a, dead_a) = refused();
+		let (_b, dead_b) = refused();
+		let addrs = Addrs::collect([dead_a, dead_b, live.clone()]).expect("not empty");
 		let shared = shared();
 		let mut draining = None;
 
@@ -1909,9 +1976,11 @@ mod tests {
 	#[cfg(feature = "tcp")]
 	#[tokio::test]
 	async fn dial_any_reports_failure_when_nothing_answers() {
-		let (_server, _live, client) = pair();
+		let client = client();
 
-		let addrs = Addrs::collect([refused(), refused()]).expect("not empty");
+		let (_a, dead_a) = refused();
+		let (_b, dead_b) = refused();
+		let addrs = Addrs::collect([dead_a, dead_b]).expect("not empty");
 		let shared = shared();
 		let mut draining = None;
 
@@ -1937,8 +2006,8 @@ mod tests {
 	async fn dialing_never_logs_the_credential() {
 		const SECRET: &str = "b91d7fe20c4a";
 
-		let (_server, _live, client) = pair();
-		let mut target = refused();
+		let client = client();
+		let (_dead, mut target) = refused();
 		target.set_path(&format!("/.cluster/{SECRET}"));
 
 		let addrs = Addrs::new(target);

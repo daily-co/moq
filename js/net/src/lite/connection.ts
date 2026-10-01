@@ -3,11 +3,12 @@ import type * as announce from "../announced.ts";
 import type { Established } from "../connection/established.ts";
 import { type Probe, type Stats, transportStats } from "../connection/stats.ts";
 import { type Transport, transportOf } from "../connection/transport.ts";
-import { error, fromClose, StreamCode, StreamError } from "../error.ts";
+import { closeError, error, fromClose, StreamCode, StreamError, sessionCause } from "../error.ts";
 import { type Hop, randomHop } from "../hop.ts";
 import type { Consumer as OriginConsumer } from "../origin.ts";
 import type * as Path from "../path.ts";
 import { type Reader, Readers, Stream, Writer } from "../stream.ts";
+import { withTimeout } from "../util/timeout.ts";
 import { registerWire } from "../wire.ts";
 import { AnnounceRequest } from "./announce.ts";
 import { Fetch } from "./fetch.ts";
@@ -48,6 +49,7 @@ export interface ConnectionProps {
  * @public
  */
 export class Connection implements Established {
+	#closing?: Promise<void>;
 	// The URL of the connection.
 	readonly url: URL;
 
@@ -116,6 +118,11 @@ export class Connection implements Established {
 		this.url = url;
 		this.#quic = quic;
 		this.#session = session;
+		// The session stream was opened at the SETUP exchange's version; the rest of it speaks this one.
+		if (session) {
+			session.reader.version = version;
+			session.writer.version = version;
+		}
 		this.version = versionName(version);
 		this.#version = version;
 		this.transport = transportOf(quic);
@@ -131,10 +138,16 @@ export class Connection implements Established {
 		void this.#run();
 	}
 
-	/**
-	 * Closes the connection.
-	 */
-	close() {
+	/** Withdraw announcements and wait up to one second for delivery before closing. */
+	close(): Promise<void> {
+		this.#closing ??= withTimeout(this.#publisher.withdraw(), 1000, "session close timed out").finally(() =>
+			this.abort(),
+		);
+		return this.#closing;
+	}
+
+	/** End the session immediately without waiting for delivery. */
+	abort(): void {
 		this.#publisher.close();
 		this.#subscriber.close();
 
@@ -161,12 +174,18 @@ export class Connection implements Established {
 			tasks.push(this.#subscriber.runDatagrams());
 		}
 
+		let fatal: Error | undefined;
 		try {
 			await Promise.all(tasks);
 		} catch (err) {
 			console.error("fatal error running connection", err);
+			// A session-sourced failure is the peer's close, not the raw transport error.
+			fatal = await sessionCause(this.#quic, err);
 		} finally {
-			this.close();
+			// The session died under every track it was receiving, so they end with its
+			// error. A deliberate close() already ended them cleanly, which makes this a no-op.
+			this.#subscriber.close(fatal ?? (await closeError(this.#quic)));
+			this.abort();
 		}
 	}
 
@@ -198,7 +217,7 @@ export class Connection implements Established {
 	// our session identity so the peer can filter
 	// reflected announcements (lite-06 removed ANNOUNCE_REQUEST's exclude_hop for it).
 	async #sendSetup(): Promise<void> {
-		const writer = await Writer.open(this.#quic);
+		const writer = await Writer.open(this.#quic, { version: this.#version });
 		try {
 			await writer.u53(DataType.Setup);
 			const probe = await probeLevel(this.#quic, this.#version);
@@ -212,7 +231,7 @@ export class Connection implements Established {
 
 	async #runBidis() {
 		for (;;) {
-			const stream = await Stream.accept(this.#quic);
+			const stream = await Stream.accept(this.#quic, this.#version);
 			if (!stream) break;
 
 			this.#runBidi(stream)
@@ -253,7 +272,7 @@ export class Connection implements Established {
 	}
 
 	async #runUnis() {
-		const readers = new Readers(this.#quic);
+		const readers = new Readers(this.#quic, this.#version);
 
 		for (;;) {
 			const stream = await readers.next();

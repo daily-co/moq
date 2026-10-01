@@ -5,7 +5,7 @@ authors = ["Luke Curley"]
 repository = "https://github.com/moq-dev/moq"
 license = "MIT OR Apache-2.0"
 
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version.workspace = true
 
@@ -15,7 +15,7 @@ default = ["client"]
 client = ["dep:reqwest", "dep:rustls", "tokio", "dep:tracing", "dep:rand"]
 # The reference auth server behind `moq auth serve`: the policy a relay held, on axum.
 serve = ["dep:axum", "tokio", "dep:tracing", "tokio/net"]
-# The lease clock: `lease::Producer::{due, failed}`.
+# The lease clock: `lease::Producer::{due, failed}` and `Grant::deadline`.
 tokio = ["dep:tokio", "dep:rand"]
 
 [dependencies]
@@ -42,6 +42,7 @@ url = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 moq-auth = { path = ".", features = ["client", "serve"] }
+moq-token = "0.7"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 wiremock = "0.6"

@@ -34,8 +34,8 @@ forbidden to a moq-transport client). The origin's multi-route front prefers
 the newest of two equal routes and `resume` splices each track at a group
 boundary, capping the old segment so the old session's subscription ends at the
 boundary on its own. The JavaScript handover is the
-[client goaway](/quest/m1/drain/client-goaway.md) quest's, so the JS half
-requires it.
+[drain](/quest/m1/drain/README.md) line's (client goaway, done there), so the
+JS half requires it.
 
 Shared decisions:
 
@@ -56,7 +56,7 @@ Shared decisions:
   per-session origin makes that a replacement rather than a join, which is
   immediate either way.
 
-## Quests
+## Required
 
 - [JavaScript](/quest/m1/transport-upgrade/js.md) - js/net keeps the WebTransport dial after WebSocket wins and migrates through the client-goaway handover
 - [Closed fallback](/quest/m1/transport-upgrade/closed-fallback.md) - a WebSocket session that closes right after connecting falls back to the pending QUIC dial instead of redialing

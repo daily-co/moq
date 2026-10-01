@@ -273,7 +273,7 @@ public final class BroadcastProducer: Sendable {
 
     /// Open a raw-audio track. PCM written via `AudioProducer.write` is encoded
     /// inside the FFI boundary per `input`/`output`. Select the codec with
-    /// `AudioCodec.opus()` (currently the only constructor), placed in `output`.
+    /// `AudioCodec.opus()` or `AudioCodec.aac()`, placed in `output`.
     ///
     /// Pass `bandwidth` to reserve this track's bitrate against the session's
     /// allocator so a co-resident video encoder sizes itself against what is left.
@@ -344,8 +344,10 @@ public final class BroadcastProducer: Sendable {
         try ffi.removeCatalogSection(name: name)
     }
 
-    /// Finish the broadcast, finalizing the catalog stream.
-    public func finish() throws {
-        try ffi.finish()
+    /// End the broadcast for good: retract it and serve no new tracks.
+    ///
+    /// Tracks already subscribed carry on to their own end. Closing again is a no-op.
+    public func close() throws {
+        try ffi.close()
     }
 }

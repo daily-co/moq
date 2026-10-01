@@ -21,7 +21,10 @@ the tokio worker path:
 
 That is `clock_gettime`. Roughly 2.5% of relay CPU spent reading the clock.
 The profile is the since-deleted quiche driver's; re-measure on noq before
-and after.
+and after. The closed, unmerged prototype
+[#3136](https://github.com/moq-dev/moq/pull/3136) froze the clock per turn
+behind an RAII guard on that driver; its shape and tests are a starting
+point.
 
 Where the reads are:
 
@@ -32,7 +35,7 @@ Where the reads are:
   `close` (rs/moq-uring/src/quic/noq/connection.rs:239), `handle_timeout`
   (:671), and `poll_transmit` (:786). The last one runs once per GSO train,
   since `flush` stages one train per turn (see
-  [Egress requeue](/quest/m1/perf/egress-requeue.md)).
+  [Run to quiescence](/quest/m1/perf/uring-quiescence.md)).
 
 The same profile shows the timer heap at ~1.6%:
 `<moq_uring::timer::Timer as moq_net::runtime::Timer>::set` 0.92% plus
