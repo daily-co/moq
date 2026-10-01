@@ -2345,6 +2345,7 @@ mod tests {
 	/// A session that came up over the WebSocket fallback moves onto QUIC once the
 	/// QUIC dial lands, without dropping a group, and forgets that WebSocket won.
 	#[cfg(all(feature = "websocket", feature = "noq"))]
+	#[tracing_test::traced_test]
 	#[tokio::test]
 	async fn websocket_upgrades_to_quic() {
 		const HANDOVER: Duration = Duration::from_millis(500);
@@ -2440,6 +2441,8 @@ mod tests {
 			.await
 			.expect("the WebSocket session outlived the handover cap");
 		assert_eq!(connection.transport(), Some(crate::Transport::WebTransport));
+		// The GOAWAY got through, so its sender has nothing to warn about.
+		assert!(!logs_contain("failed to send goaway"));
 	}
 
 	/// When WebSocket wins the race but its MoQ handshake fails, the attempt falls back
