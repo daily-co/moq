@@ -2135,9 +2135,22 @@ mod tests {
 		accepted: tokio::sync::mpsc::UnboundedReceiver<(crate::Transport, moq_net::Session)>,
 	}
 
+	/// When a [`Fallback`] lets QUIC through.
+	#[cfg(all(feature = "websocket", feature = "noq"))]
+	#[derive(Clone, Copy, PartialEq)]
+	enum Quic {
+		/// From the start.
+		Open,
+		/// Once the test calls [`Forwarder::open`].
+		Held,
+		/// Once the WebSocket fallback has closed its first session mid-handshake. No
+		/// MoQ server sits behind the fallback in this mode.
+		AfterWebSocketFails,
+	}
+
 	#[cfg(all(feature = "websocket", feature = "noq"))]
 	impl Fallback {
-		async fn start(origin: &moq_net::origin::Producer, open: bool) -> Self {
+		async fn start(origin: &moq_net::origin::Producer, quic: Quic) -> Self {
 			let mut listen = crate::listen::Config {
 				bind: Some("127.0.0.1:0".parse().unwrap()),
 				..Default::default()
@@ -2159,16 +2172,36 @@ mod tests {
 				panic!("could not bind a matching TCP and UDP port after 20 attempts");
 			};
 
+			// With no MoQ server behind it, the fallback's session gets as far as the MoQ
+			// handshake and no further.
+			let (websocket, failing) = match quic {
+				Quic::AfterWebSocketFails => (None, Some(websocket)),
+				_ => (Some(websocket), None),
+			};
+
 			let config = crate::server::Config {
 				listen,
-				websocket: Some(websocket),
+				websocket,
 				publisher: Some(origin.consume()),
 				..Default::default()
 			};
 			let mut server = config.init().unwrap().listen().await.unwrap();
-			let quic = server.local_addr().unwrap();
+			let server_addr = server.local_addr().unwrap();
 			let port = forwarder.local_addr().unwrap().port();
-			let forwarder = Forwarder::start(forwarder, quic, open).await;
+			let forwarder = Forwarder::start(forwarder, server_addr, quic == Quic::Open).await;
+
+			if let Some(websocket) = failing {
+				let gate = forwarder.clone();
+				tokio::spawn(async move {
+					use web_transport_trait::Session as _;
+					let session = websocket.accept().await.unwrap().unwrap();
+					// The client's SETUP stream: WebSocket has won the race.
+					let _setup = session.accept_bi().await.unwrap();
+					session.close(1, "no MoQ here");
+					gate.open();
+					session.closed().await;
+				});
+			}
 
 			let (tx, accepted) = tokio::sync::mpsc::unbounded_channel();
 			tokio::spawn(async move {
@@ -2200,8 +2233,9 @@ mod tests {
 	/// Holding is what makes WebSocket win the race without depending on timing: the
 	/// QUIC dial cannot finish until the test says so.
 	#[cfg(all(feature = "websocket", feature = "noq"))]
+	#[derive(Clone)]
 	struct Forwarder {
-		gate: tokio::sync::watch::Sender<bool>,
+		gate: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
 	}
 
 	#[cfg(all(feature = "websocket", feature = "noq"))]
@@ -2253,7 +2287,7 @@ mod tests {
 				}
 			});
 
-			Self { gate: tx }
+			Self { gate: tx.into() }
 		}
 
 		/// Start forwarding, releasing whatever was held.
@@ -2311,6 +2345,7 @@ mod tests {
 	/// A session that came up over the WebSocket fallback moves onto QUIC once the
 	/// QUIC dial lands, without dropping a group, and forgets that WebSocket won.
 	#[cfg(all(feature = "websocket", feature = "noq"))]
+	#[tracing_test::traced_test]
 	#[tokio::test]
 	async fn websocket_upgrades_to_quic() {
 		const HANDOVER: Duration = Duration::from_millis(500);
@@ -2325,7 +2360,7 @@ mod tests {
 			group.finish().unwrap();
 		};
 
-		let mut fallback = Fallback::start(&origin, false).await;
+		let mut fallback = Fallback::start(&origin, Quic::Held).await;
 
 		let subscriber = crate::origin::spawn();
 		let mut config = crate::connect::Config::default();
@@ -2406,6 +2441,39 @@ mod tests {
 			.await
 			.expect("the WebSocket session outlived the handover cap");
 		assert_eq!(connection.transport(), Some(crate::Transport::WebTransport));
+		// The GOAWAY got through, so its sender has nothing to warn about.
+		assert!(!logs_contain("failed to send goaway"));
+	}
+
+	/// When WebSocket wins the race but its MoQ handshake fails, the attempt falls back
+	/// to the QUIC dial still pending instead of failing.
+	///
+	/// One-shot, so a redial cannot stand in for the fallback. Draft 16, since it is the
+	/// newest version whose client handshake waits on the server's SETUP.
+	#[cfg(all(feature = "websocket", feature = "noq"))]
+	#[tokio::test]
+	async fn failed_websocket_handshake_falls_back_to_quic() {
+		let origin = crate::origin::spawn();
+		let mut fallback = Fallback::start(&origin, Quic::AfterWebSocketFails).await;
+
+		let mut config = crate::connect::Config::default();
+		config.tls.insecure = Some(true);
+		config.version = vec!["moq-transport-16".parse().unwrap()];
+		let client = config.init(Default::default()).unwrap().with_reconnect(false);
+		let connection = tokio::time::timeout(UPGRADE_WAIT, client.connect(fallback.url.clone()).established())
+			.await
+			.expect("never connected")
+			.expect("a failed WebSocket handshake must fall back to the pending QUIC dial");
+
+		assert_eq!(connection.transport(), Some(crate::Transport::WebTransport));
+		assert_eq!(connection.epoch(), 1);
+		let (transport, _session) = fallback.accept().await;
+		assert_eq!(transport, crate::Transport::WebTransport);
+		// QUIC works on this network, so the next dial gives it the head start again.
+		assert!(
+			!crate::websocket::won(&fallback.url),
+			"the fallback kept WebSocket's win"
+		);
 	}
 
 	/// When QUIC wins the race nothing changes: one session, over QUIC, and no
@@ -2418,7 +2486,7 @@ mod tests {
 		broadcast.announce(Default::default()).unwrap();
 		let track = broadcast.create_track("video", None).unwrap();
 
-		let mut fallback = Fallback::start(&origin, true).await;
+		let mut fallback = Fallback::start(&origin, Quic::Open).await;
 
 		let subscriber = crate::origin::spawn();
 		let mut config = crate::connect::Config::default();
