@@ -1,6 +1,4 @@
 use crate::origin;
-#[cfg(test)]
-use crate::runtime::Timers;
 use crate::time::{Clock, Instant};
 use crate::{
 	ALPN_14, ALPN_15, ALPN_16, ALPN_17, ALPN_18, ALPN_19, ALPN_20, ALPN_21, ALPN_22, ALPN_LITE, ALPN_LITE_03,
@@ -680,11 +678,8 @@ mod tests {
 		);
 
 		// Start the returned driver after the handshake completes.
-		let (_session, driver) = client
-			.connect(tokio::time::Instant::now().into_std(), fake.clone())
-			.await
-			.unwrap();
-		tokio::spawn(crate::time::run(driver));
+		let (_session, driver) = client.connect(moq_net_sim::now(), fake.clone()).await.unwrap();
+		moq_net_sim::spawn(crate::time::run_sim(driver));
 
 		// Verify the client setup was encoded using Draft14 framing (ALPN_LITE fallback path).
 		let mut setup_bytes = Bytes::from(fake.control_writes());
@@ -720,7 +715,7 @@ mod tests {
 	/// `connect` for the life of the session, since it waited for the initial announce
 	/// set. Resolving a path you need is `routed`'s job, which waits for
 	/// that path rather than for the peer to finish talking.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn connect_does_not_wait_for_the_peer_to_announce() {
 		// Serves bidi streams, so the announce stream opens, and never answers on them.
 		let gate = kio::Producer::new(true);
@@ -735,9 +730,9 @@ mod tests {
 
 		// Paused time auto-advances while every task is idle, so a `connect` that waits
 		// on the silent peer trips this rather than hanging the suite.
-		let (_session, _driver) = tokio::time::timeout(
+		let (_session, _driver) = moq_net_sim::timeout(
 			std::time::Duration::from_secs(30),
-			client.connect(tokio::time::Instant::now().into_std(), transport),
+			client.connect(moq_net_sim::now(), transport),
 		)
 		.await
 		.expect("connect waited on a peer that never announced")
@@ -746,7 +741,7 @@ mod tests {
 
 	/// A peer that never delivers its announce count cannot stall the live
 	/// marker past its session: dropping the session lands the source.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_dead_session_does_not_hold_the_live_marker() {
 		let gate = kio::Producer::new(true);
 		let transport = crate::lite::test_transport::SinkSession::gated_bi(gate.consume())
@@ -757,14 +752,14 @@ mod tests {
 			.with_versions([Version::Lite(lite::Version::Lite05)].into())
 			.with_subscriber(origin.clone());
 		let (session, driver) = client
-			.connect(tokio::time::Instant::now().into_std(), transport)
+			.connect(moq_net_sim::now(), transport)
 			.await
 			.expect("connect failed");
 
 		let mut announced = origin.consume().announced();
 		let mut next = std::pin::pin!(announced.next());
 		assert!(
-			tokio::time::timeout(std::time::Duration::from_secs(5), next.as_mut())
+			moq_net_sim::timeout(std::time::Duration::from_secs(5), next.as_mut())
 				.await
 				.is_err(),
 			"live before the peer answered"
@@ -775,12 +770,12 @@ mod tests {
 		assert!(matches!(next.await, Some(crate::announce::Event::Live)));
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn alpn_lite_falls_back_to_draft14_and_switches_version_post_setup() {
 		run_alpn_lite_fallback_case(Some(ALPN_LITE)).await;
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn no_alpn_falls_back_to_draft14_and_switches_version_post_setup() {
 		run_alpn_lite_fallback_case(None).await;
 	}
@@ -792,7 +787,7 @@ mod tests {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(client.connect(runtime.now(), fake.clone())).unwrap();
 		assert_eq!(session.version(), Version::Lite(lite::Version::Lite04));
 
@@ -815,7 +810,7 @@ mod tests {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(client.connect(runtime.now(), fake.clone())).unwrap();
 		let clone = session.clone();
 
@@ -849,7 +844,7 @@ mod tests {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, driver) = futures::executor::block_on(client.connect(runtime.now(), fake.clone())).unwrap();
 
 		drop(driver);
@@ -1012,7 +1007,7 @@ mod tests {
 		};
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(client.connect_lite(runtime.now(), local)).unwrap();
 		assert!(driver.poll(runtime.now(), &kio::Waiter::noop()).is_ok());
 
@@ -1035,7 +1030,7 @@ mod tests {
 		};
 		let server = crate::Server::new().with_versions(Version::Lite(lite::Version::Lite04).into());
 
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let (session, mut driver) = futures::executor::block_on(server.accept_lite(runtime.now(), local)).unwrap();
 		assert_eq!(session.version(), Version::Lite(lite::Version::Lite04));
 		assert!(driver.poll(runtime.now(), &kio::Waiter::noop()).is_ok());
@@ -1056,7 +1051,7 @@ mod tests {
 			_local: std::rc::Rc::new(()),
 		};
 		let client = Client::new();
-		let runtime = crate::runtime::Test::new();
+		let runtime = crate::time::Clock::new(crate::time::Instant::now());
 		let result = futures::executor::block_on(client.connect_lite(runtime.now(), local));
 		assert!(matches!(result, Err(Error::Version)));
 	}
@@ -1064,17 +1059,14 @@ mod tests {
 	// `stats()` reads the machine's latest sample and primes the sampler, so a
 	// periodic poller observes fresh counters without consuming the bandwidth
 	// channel.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn stats_reads_prime_the_sampler() {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		fake.set_send_rate(Some(1_000_000));
 
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
-		let (session, driver) = client
-			.connect(tokio::time::Instant::now().into_std(), fake.clone())
-			.await
-			.unwrap();
-		tokio::spawn(crate::time::run(driver));
+		let (session, driver) = client.connect(moq_net_sim::now(), fake.clone()).await.unwrap();
+		moq_net_sim::spawn(crate::time::run_sim(driver));
 
 		// The construction-time snapshot, before the machine sampled anything.
 		assert_eq!(
@@ -1086,7 +1078,7 @@ mod tests {
 		// so the new rate shows up within an interval (paused time auto-advances).
 		fake.set_send_rate(Some(2_000_000));
 		while session.stats().estimated_send_rate != Some(crate::bandwidth::Rate::from_bps(2_000_000)) {
-			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			moq_net_sim::sleep(std::time::Duration::from_millis(10)).await;
 		}
 	}
 
@@ -1096,18 +1088,15 @@ mod tests {
 	// the construction-time snapshot: this backend reports no send rate, so
 	// there is no bandwidth consumer keeping the sampler ticking, and the test
 	// never reads stats while the session is live.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn stats_capture_the_final_counters() {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		fake.set_send_rate(None);
 		fake.set_bytes_sent(Some(0));
 
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
-		let (session, driver) = client
-			.connect(tokio::time::Instant::now().into_std(), fake.clone())
-			.await
-			.unwrap();
-		tokio::spawn(crate::time::run(driver));
+		let (session, driver) = client.connect(moq_net_sim::now(), fake.clone()).await.unwrap();
+		moq_net_sim::spawn(crate::time::run_sim(driver));
 		assert!(
 			session.send_bandwidth().is_none(),
 			"no send-rate estimate, so nothing samples on its own"
@@ -1126,19 +1115,16 @@ mod tests {
 	}
 
 	// The send-bandwidth sampler lives inside the driver: it samples as soon as a
-	// consumer exists and keeps sampling on its interval. Paused tokio time makes
+	// consumer exists and keeps sampling on its interval. Simulated time makes
 	// the interval fire deterministically.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn send_bandwidth_samples_while_the_driver_runs() {
 		let fake = FakeSession::new(Some(ALPN_LITE_04), Vec::new());
 		fake.set_send_rate(Some(1_000_000));
 
 		let client = Client::new().with_versions(Version::Lite(lite::Version::Lite04).into());
-		let (session, driver) = client
-			.connect(tokio::time::Instant::now().into_std(), fake.clone())
-			.await
-			.unwrap();
-		tokio::spawn(crate::time::run(driver));
+		let (session, driver) = client.connect(moq_net_sim::now(), fake.clone()).await.unwrap();
+		moq_net_sim::spawn(crate::time::run_sim(driver));
 
 		let mut bandwidth = session.send_bandwidth().expect("backend reports an estimate");
 		assert_eq!(

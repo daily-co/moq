@@ -44,7 +44,8 @@ Decided in planning (2026-09-27), with the spike data in
   is no worse to use; watch, publish, hang, and the demos update in the same
   change.
 - Parity: `just test interop --all`, plus moq-net's own tests translated with
-  the code once they run on a mock clock instead of tokio.
+  the code. They run on simulated time with no runtime (`moq-net-sim`), so the
+  async-free ones translate as they stand.
 - The line lands on `dev`: the Rust refactors break moq-net's published API,
   and the translator and generated code build on them. Only the additive
   JS `U64` (`js/net/src/util/u64.ts`) is on `main`, package-internal.
@@ -59,7 +60,6 @@ js/net it replaces, measured with the [browser benchmarks](/quest/m1/browser-ben
 
 - [rs2ts](/quest/m1/rs2ts/translator.md) - a Charon-based translator emits readable TypeScript for moq-net's lite codec, committed and checked for drift in CI
 - [Sans-IO moq-net](/quest/m1/rs2ts/sans-io/README.md) - moq-net builds and runs without a runtime; async helpers sit behind an `async` feature
-- [Mock-clock tests](/quest/m1/rs2ts/mock-clock.md) - moq-net's tests run on the sans-IO clock instead of tokio, so they translate with the code
 - [Generated lite](/quest/m1/rs2ts/lite.md) - @moq/net's lite session and model layer are generated from moq-net
 - [IETF parameters](/quest/m1/rs2ts/ietf-params.md) - the IETF codec drops its `Param` trait on primitives, so it translates like lite
 - [Generated IETF](/quest/m1/rs2ts/ietf.md) - @moq/net's moq-transport session is generated too

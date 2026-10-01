@@ -2482,8 +2482,8 @@ mod test {
 		}
 	}
 
-	#[tokio::test]
-	async fn switch_splices_groups() {
+	#[test]
+	fn switch_splices_groups() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -2510,8 +2510,8 @@ mod test {
 
 	/// A segment that ends at or below the cursor's floor serves it nothing, so its
 	/// source's unresolved start must not hold up the start of the segment that does.
-	#[tokio::test]
-	async fn poll_start_skips_a_segment_below_the_floor() {
+	#[test]
+	fn poll_start_skips_a_segment_below_the_floor() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 		track_a.request_start(Some(0)).unwrap();
@@ -2536,8 +2536,8 @@ mod test {
 
 	/// A segment that already ended serves nothing more, so the start comes from the next
 	/// one rather than falling back to whichever group arrives first.
-	#[tokio::test]
-	async fn poll_start_skips_an_ended_segment() {
+	#[test]
+	fn poll_start_skips_an_ended_segment() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 		track_b.request_start(Some(5)).unwrap();
@@ -2560,8 +2560,8 @@ mod test {
 		assert_eq!(start, Some(Some(5)));
 	}
 
-	#[tokio::test]
-	async fn demand_reflects_boundaries() {
+	#[test]
+	fn demand_reflects_boundaries() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -2583,8 +2583,8 @@ mod test {
 		assert_eq!(track_b.subscription().unwrap().start, Some(Position::group(5)));
 	}
 
-	#[tokio::test]
-	async fn update_reslices_demand() {
+	#[test]
+	fn update_reslices_demand() {
 		let (track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -2599,8 +2599,8 @@ mod test {
 		assert_eq!(track_a.subscription().unwrap().priority, 7);
 	}
 
-	#[tokio::test]
-	async fn dead_segment_stalls_until_switch() {
+	#[test]
+	fn dead_segment_stalls_until_switch() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -2621,8 +2621,8 @@ mod test {
 		assert_eq!(recv(&mut sub), 1);
 	}
 
-	#[tokio::test]
-	async fn takeover_computes_boundary() {
+	#[test]
+	fn takeover_computes_boundary() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -2649,8 +2649,8 @@ mod test {
 	/// so the takeover asks the new route to replay a backlog. That backlog is bounded
 	/// by the drift budget and nothing else: a REAL_TIME subscriber jumps to the live
 	/// edge, while one that declared a budget covering the gap reads it whole.
-	#[tokio::test]
-	async fn a_takeover_backlog_is_bounded_by_the_budget() {
+	#[test]
+	fn a_takeover_backlog_is_bounded_by_the_budget() {
 		// Both routes retain a minute, so the budget is the only thing bounding the
 		// backlog (a budget past the publisher's window is clamped to it).
 		let retain = track::Info::default().with_max_age(std::time::Duration::from_secs(60));
@@ -2693,8 +2693,8 @@ mod test {
 	/// one. The segment is deliberately left uncapped so its completion stays visible, so
 	/// the cap has to reach its drift anchor by another route or the groups the reader
 	/// still wants read as ancient.
-	#[tokio::test]
-	async fn a_capped_spliced_subscriber_measures_drift_against_its_cap() {
+	#[test]
+	fn a_capped_spliced_subscriber_measures_drift_against_its_cap() {
 		let retain = track::Info::default().with_max_age(std::time::Duration::from_secs(60));
 		let (mut track_a, consumer_a) = track_pair_with("a", retain);
 
@@ -2713,8 +2713,8 @@ mod test {
 	/// A group parked above the cap is re-checked when the cap rises: the live edge moved
 	/// while it waited, so handing it back unconditionally would deliver a backlog the
 	/// budget has already given up on.
-	#[tokio::test]
-	async fn a_raised_cap_rechecks_parked_groups() {
+	#[test]
+	fn a_raised_cap_rechecks_parked_groups() {
 		let retain = track::Info::default().with_max_age(std::time::Duration::from_secs(60));
 		let (mut track_a, consumer_a) = track_pair_with("a", retain);
 
@@ -2739,8 +2739,8 @@ mod test {
 
 	/// Completing the segment must not discard the cursor that evaluates parked
 	/// groups. A later cap increase still uses the terminal track's live edge.
-	#[tokio::test]
-	async fn a_raised_cap_rechecks_parked_groups_after_segment_finish() {
+	#[test]
+	fn a_raised_cap_rechecks_parked_groups_after_segment_finish() {
 		let retain = track::Info::default().with_max_age(std::time::Duration::from_secs(60));
 		let (mut track_a, consumer_a) = track_pair_with("a", retain);
 
@@ -2764,8 +2764,8 @@ mod test {
 		recv_pending(&mut sub);
 	}
 
-	#[tokio::test]
-	async fn takeover_replaces_empty_segment() {
+	#[test]
+	fn takeover_replaces_empty_segment() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -2782,8 +2782,8 @@ mod test {
 		assert_eq!(recv(&mut sub), 0);
 	}
 
-	#[tokio::test]
-	async fn finish_ends_after_final_segment() {
+	#[test]
+	fn finish_ends_after_final_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -2810,8 +2810,8 @@ mod test {
 		assert!(sub.closed().now_or_never().unwrap().is_ok());
 	}
 
-	#[tokio::test]
-	async fn next_group_across_segments() {
+	#[test]
+	fn next_group_across_segments() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -2832,8 +2832,8 @@ mod test {
 		read(b"b1");
 	}
 
-	#[tokio::test]
-	async fn info_from_first_segment() {
+	#[test]
+	fn info_from_first_segment() {
 		let (_track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -2847,8 +2847,8 @@ mod test {
 		assert_eq!(info.timescale, crate::Timescale::default());
 	}
 
-	#[tokio::test]
-	async fn fetch_uses_an_older_complete_cache_before_the_newest_segment() {
+	#[test]
+	fn fetch_uses_an_older_complete_cache_before_the_newest_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -2880,7 +2880,7 @@ mod test {
 		assert_eq!(read(&mut group), b"b4");
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn fetch_waits_for_first_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
@@ -2900,7 +2900,7 @@ mod test {
 		assert_eq!(group.sequence, 0);
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn pending_fetch_follows_a_newer_segment() {
 		let (track_a, consumer_a) = track_pair("a");
 		let dynamic_a = track_a.dynamic();
@@ -2910,15 +2910,15 @@ mod test {
 		let mut producer = Producer::new();
 		producer.takeover(&consumer_a).unwrap();
 		let consumer = producer.consume();
-		let fetch = tokio::spawn(async move { consumer.fetch_group(0, None).await });
+		let fetch = moq_net_sim::spawn(async move { consumer.fetch_group(0, None).await });
 
-		let _request_a = tokio::time::timeout(Duration::from_secs(1), dynamic_a.requested_group())
+		let _request_a = moq_net_sim::timeout(Duration::from_secs(1), dynamic_a.requested_group())
 			.await
 			.expect("first segment should receive the fetch")
 			.unwrap();
 
 		producer.takeover(&consumer_b).unwrap();
-		let request_b = tokio::time::timeout(Duration::from_secs(1), dynamic_b.requested_group())
+		let request_b = moq_net_sim::timeout(Duration::from_secs(1), dynamic_b.requested_group())
 			.await
 			.expect("pending fetch should follow the takeover")
 			.unwrap();
@@ -2926,7 +2926,7 @@ mod test {
 		served.write_frame(Timestamp::ZERO, b"b0".to_vec()).unwrap();
 		served.finish().unwrap();
 
-		let mut group = tokio::time::timeout(Duration::from_secs(1), fetch)
+		let mut group = moq_net_sim::timeout(Duration::from_secs(1), fetch)
 			.await
 			.expect("replacement should answer the fetch")
 			.unwrap()
@@ -2960,8 +2960,8 @@ mod test {
 		);
 	}
 
-	#[tokio::test]
-	async fn takeover_survives_dead_empty_segment() {
+	#[test]
+	fn takeover_survives_dead_empty_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 		let (mut track_c, consumer_c) = track_pair("c");
@@ -2984,8 +2984,8 @@ mod test {
 		assert_eq!(recv(&mut sub), 1);
 	}
 
-	#[tokio::test]
-	async fn finished_does_not_consume_groups() {
+	#[test]
+	fn finished_does_not_consume_groups() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -3003,8 +3003,8 @@ mod test {
 		assert_eq!(sub.finished().now_or_never().unwrap().unwrap(), 1);
 	}
 
-	#[tokio::test]
-	async fn datagram_only_subscriber_activates() {
+	#[test]
+	fn datagram_only_subscriber_activates() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -3027,8 +3027,8 @@ mod test {
 		assert_eq!(&datagram.payload[..], b"d0");
 	}
 
-	#[tokio::test]
-	async fn end_at_parks_at_cap() {
+	#[test]
+	fn end_at_parks_at_cap() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -3050,8 +3050,8 @@ mod test {
 
 	/// A parked beyond-cap group must not block in-range groups that arrive
 	/// behind it: a relay can ingest a burst micro-reordered (newest first).
-	#[tokio::test]
-	async fn end_at_reoffers_reordered_arrivals() {
+	#[test]
+	fn end_at_reoffers_reordered_arrivals() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -3077,8 +3077,8 @@ mod test {
 
 	/// A parked group the producer aborts (eviction/expiry) is dropped rather
 	/// than re-offered when the cap rises.
-	#[tokio::test]
-	async fn evicted_parked_groups_are_dropped() {
+	#[test]
+	fn evicted_parked_groups_are_dropped() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -3098,8 +3098,8 @@ mod test {
 		assert_eq!(recv(&mut sub), 2, "the evicted parked group is dropped, not re-offered");
 	}
 
-	#[tokio::test]
-	async fn next_group_skips_boundary_duplicate() {
+	#[test]
+	fn next_group_skips_boundary_duplicate() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -3132,8 +3132,8 @@ mod test {
 	/// A beyond-cap group arriving (and being polled) before an in-range one must not
 	/// advance the sequence cursor past the late arrival: the inner cursor is capped,
 	/// so the reordered burst is delivered in order once the cap admits each group.
-	#[tokio::test]
-	async fn next_group_cap_holds_a_reordered_group_without_losing_late_arrivals() {
+	#[test]
+	fn next_group_cap_holds_a_reordered_group_without_losing_late_arrivals() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let mut producer = Producer::new();
 		producer.switch(&consumer_a, None).unwrap();
@@ -3175,8 +3175,8 @@ mod test {
 	/// Lowering the cap after the cursor already considered (but did not deliver) a
 	/// higher group must not strand a late in-range arrival: seeking consumes
 	/// nothing, so no segment cursor ever steps past an undelivered sequence.
-	#[tokio::test]
-	async fn next_group_cap_lowering_after_a_lookahead_keeps_late_arrivals() {
+	#[test]
+	fn next_group_cap_lowering_after_a_lookahead_keeps_late_arrivals() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 		let mut producer = Producer::new();
@@ -3220,8 +3220,8 @@ mod test {
 	/// The spliced sequence path inherits the [`track::Ordered`] contract: the drift
 	/// budget applies as it reads, and a backlog inside the budget still crosses a
 	/// takeover boundary whole, exactly as a plain track's sequence cursor delivers it.
-	#[tokio::test]
-	async fn next_group_sheds_a_stale_backlog_like_a_plain_track() {
+	#[test]
+	fn next_group_sheds_a_stale_backlog_like_a_plain_track() {
 		// Groups spaced 10s apart on the media timeline, so with the default (zero)
 		// max age budget every group behind the newest one's reach is stale.
 		let stamp = |sequence: u64| Duration::from_secs(10 * sequence);
@@ -3308,8 +3308,8 @@ mod test {
 	/// Both spliced cursors judge its backlog as one plain track holding the same groups
 	/// would: against the logical edge, with the last group's reach bounded by where the
 	/// next segment picks up.
-	#[tokio::test]
-	async fn a_capped_segment_is_judged_like_one_track() {
+	#[test]
+	fn a_capped_segment_is_judged_like_one_track() {
 		let budget = Subscription::default().with_max_age(Duration::from_millis(100));
 		let old = [(0, 0), (1, 20), (2, 40), (3, 60)];
 		let new = [(20, 400), (21, 420), (22, 440), (23, 460), (24, 480), (25, 500)];
@@ -3368,8 +3368,8 @@ mod test {
 	/// [`track::Subscriber::set_anchor`] recursing into the spliced segment; without
 	/// either, a leaf anchors drift on a group past the outer boundary and convicts
 	/// everything the outer segment still owes its reader.
-	#[tokio::test]
-	async fn nested_splice_judges_within_the_outer_boundary() {
+	#[test]
+	fn nested_splice_judges_within_the_outer_boundary() {
 		let stamp = |sequence: u64| Duration::from_secs(10 * sequence);
 		let retain = track::Info::default().with_max_age(Duration::from_secs(60));
 		let budget = Subscription::default().with_max_age(Duration::from_secs(15));
@@ -3426,8 +3426,8 @@ mod test {
 	/// delivers from one, so a losing segment's conviction must not reach the stale
 	/// count until the cursor commits past it. A budget that widens in between delivers
 	/// the group after all, and delivered content never counts.
-	#[tokio::test]
-	async fn seek_conviction_counts_only_once_committed() {
+	#[test]
+	fn seek_conviction_counts_only_once_committed() {
 		// Group 2 starts after group 3 (a rewind), so group 1's reach runs past the live
 		// edge and it survives a zero budget, while groups 0 and 2 are convicted.
 		let stamp = |sequence: u64| Duration::from_secs([0, 10, 40, 30][sequence as usize]);
@@ -3473,8 +3473,8 @@ mod test {
 	/// The seek floor is not a commit signal: `start_at` can raise it and lower it
 	/// again, so a losing segment's conviction must survive a floor that briefly
 	/// jumped past it, and still be deliverable (uncounted) once the budget widens.
-	#[tokio::test]
-	async fn a_reversible_floor_does_not_commit_a_conviction() {
+	#[test]
+	fn a_reversible_floor_does_not_commit_a_conviction() {
 		// Group 2 starts after group 3 (a rewind), so group 1's reach runs past the live
 		// edge and it survives a zero budget, while groups 0 and 2 are convicted.
 		let stamp = |sequence: u64| Duration::from_secs([0, 10, 40, 30][sequence as usize]);
@@ -3524,8 +3524,8 @@ mod test {
 	/// the earlier serves the head, the later the continuation the delivery splices
 	/// into. The later segment's cursor can convict its copy, but the delivery serves
 	/// that content, so the conviction must be discarded rather than counted.
-	#[tokio::test]
-	async fn a_delivered_continuation_is_not_counted_stale() {
+	#[test]
+	fn a_delivered_continuation_is_not_counted_stale() {
 		// Group 2 starts after group 3 (a rewind), so group 1's reach runs past the live
 		// edge and it survives a zero budget, while groups 0 and 2 are convicted.
 		let stamp = |sequence: u64| Duration::from_secs([0, 10, 40, 30][sequence as usize]);
@@ -3569,8 +3569,8 @@ mod test {
 	/// the *previous* segment (whose delivery splices into this segment's copy), and a
 	/// raised floor that forced the `None` can be lowered again. Only a delivery
 	/// commit may count; a conviction never committed is dropped with the cursor.
-	#[tokio::test]
-	async fn a_finalized_segment_flushes_nothing_without_a_delivery() {
+	#[test]
+	fn a_finalized_segment_flushes_nothing_without_a_delivery() {
 		// Group 1 starts after group 3 (a rewind), so group 0's reach runs past the live
 		// edge and it survives a zero budget, while groups 1 and 2 are convicted.
 		let stamp = |sequence: u64| Duration::from_secs([0, 40, 20, 30][sequence as usize]);
@@ -3629,8 +3629,8 @@ mod test {
 	/// A parked group re-offered through a *nested* splice is re-checked against the
 	/// drift budget exactly as a plain segment's would be: the cap rising widened the
 	/// live edge too, and the covering segment's leaf is the cursor that can judge it.
-	#[tokio::test]
-	async fn nested_parked_group_is_rechecked_when_the_cap_rises() {
+	#[test]
+	fn nested_parked_group_is_rechecked_when_the_cap_rises() {
 		let stamp = |sequence: u64| Duration::from_secs(10 * sequence);
 
 		// Inner splice over one plain track holding groups 0..=2.
@@ -3670,8 +3670,8 @@ mod test {
 		assert_eq!(sub.take_stale().groups, 1, "the skipped park is counted once");
 	}
 
-	#[tokio::test]
-	async fn consecutive_updates_wake() {
+	#[test]
+	fn consecutive_updates_wake() {
 		use std::task::Context;
 
 		let (track_a, consumer_a) = track_pair("a");
@@ -3709,8 +3709,8 @@ mod test {
 	/// the reader keeps the same group handle, sees no duplicate frames, and never
 	/// learns a route changed. This is the whole point of frame-precise boundaries
 	/// (a JSON append log's group may never roll).
-	#[tokio::test]
-	async fn takeover_splices_mid_group() {
+	#[test]
+	fn takeover_splices_mid_group() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -3752,8 +3752,8 @@ mod test {
 		recv_pending(&mut sub);
 	}
 
-	#[tokio::test]
-	async fn a_replacement_copy_keeps_the_handed_out_group_latency_budget() {
+	#[test]
+	fn a_replacement_copy_keeps_the_handed_out_group_latency_budget() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -3780,7 +3780,6 @@ mod test {
 			"the replacement group is still the live edge"
 		);
 
-		crate::model::clock::advance(std::time::Duration::from_secs(1));
 		write_group_at(&mut track_b, 1, "edge", std::time::Duration::from_secs(1));
 
 		let result = reading
@@ -3798,8 +3797,8 @@ mod test {
 	/// This is what a peer too old for frame bounds delivers. The lite subscriber widens
 	/// the request to the whole group for such a peer rather than failing to encode it
 	/// (see `TrackServe::widen_frame_bounds`), so the extra frames are filtered here.
-	#[tokio::test]
-	async fn takeover_splices_a_replacement_that_resends_the_head() {
+	#[test]
+	fn takeover_splices_a_replacement_that_resends_the_head() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -3837,8 +3836,8 @@ mod test {
 	/// A route dying midway through a chunked frame resumes *at* that frame, not after
 	/// it. Only the dead route ever saw its payload, and only part of it, so nothing
 	/// downstream can use it.
-	#[tokio::test]
-	async fn takeover_redelivers_an_incomplete_frame() {
+	#[test]
+	fn takeover_redelivers_an_incomplete_frame() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -3885,8 +3884,8 @@ mod test {
 
 	/// The old route racing past its frame boundary is filtered, exactly as an
 	/// out-of-range group is.
-	#[tokio::test]
-	async fn mid_group_boundary_caps_the_old_route() {
+	#[test]
+	fn mid_group_boundary_caps_the_old_route() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -3919,8 +3918,8 @@ mod test {
 
 	/// A takeover only rolls to the next group once the current one is complete;
 	/// there is nothing left to append to it.
-	#[tokio::test]
-	async fn takeover_rolls_past_a_finished_group() {
+	#[test]
+	fn takeover_rolls_past_a_finished_group() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -3942,8 +3941,8 @@ mod test {
 
 	/// A copy dying mid-group stalls its readers instead of erroring them, the same
 	/// way a dead segment stalls the track. The next takeover resumes them.
-	#[tokio::test]
-	async fn dead_copy_stalls_until_the_continuation() {
+	#[test]
+	fn dead_copy_stalls_until_the_continuation() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -3971,8 +3970,8 @@ mod test {
 	/// A dead copy stalls only while a replacement can still arrive. Once the logical
 	/// track aborts, no switch is coming, so the reader has to surface the loss rather
 	/// than park on it forever.
-	#[tokio::test]
-	async fn dead_copy_ends_once_the_track_aborts() {
+	#[test]
+	fn dead_copy_ends_once_the_track_aborts() {
 		let (track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -4003,8 +4002,8 @@ mod test {
 	/// A group the reader gave up on stays lost: every later poll reports the same
 	/// loss. `finished` is how a reader tells a transport loss from a bad payload, so
 	/// it must not park once the route's aborted copy has been reclaimed from its cache.
-	#[tokio::test]
-	async fn lost_group_stays_lost() {
+	#[test]
+	fn lost_group_stays_lost() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -4046,8 +4045,8 @@ mod test {
 	/// The loss is reported rather than parked on, because the route already produced
 	/// past the missing frames. Boundaries come from `resume_position`, which only moves
 	/// forward, so no future takeover will ever ask anyone for frame 0 again.
-	#[tokio::test]
-	async fn copy_missing_the_head_is_lost() {
+	#[test]
+	fn copy_missing_the_head_is_lost() {
 		let (track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -4073,8 +4072,8 @@ mod test {
 	/// It may yet deliver the missing frames out of order, and its own progress is what
 	/// moved the resume point past them, so its being ahead is not evidence the frames
 	/// are gone. Only a route already declared dead strands the reader.
-	#[tokio::test]
-	async fn live_route_ahead_of_the_seam_still_parks() {
+	#[test]
+	fn live_route_ahead_of_the_seam_still_parks() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -4108,8 +4107,8 @@ mod test {
 		assert_eq!(read(&mut reading), b"b2");
 	}
 
-	#[tokio::test]
-	async fn takeover_after_empty_segment_keeps_live_edge() {
+	#[test]
+	fn takeover_after_empty_segment_keeps_live_edge() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -4128,7 +4127,7 @@ mod test {
 		assert_eq!(track_b.subscription().unwrap().start, None);
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn fetch_fails_over_to_a_newer_segment() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
@@ -4151,7 +4150,7 @@ mod test {
 		assert_eq!(group.sequence, 0);
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn fetch_aborts_with_the_track() {
 		let (track_a, consumer_a) = track_pair("a");
 
@@ -4169,7 +4168,7 @@ mod test {
 		assert!(matches!(fetch.await, Err(Error::Cancel)));
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn fetch_pending_ends_when_the_track_aborts() {
 		let (track_a, consumer_a) = track_pair("a");
 
@@ -4193,8 +4192,8 @@ mod test {
 		drop(handler);
 	}
 
-	#[tokio::test]
-	async fn fetch_error_from_a_live_copy_is_authoritative() {
+	#[test]
+	fn fetch_error_from_a_live_copy_is_authoritative() {
 		let (_track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -4210,8 +4209,8 @@ mod test {
 		assert!(matches!(result, Err(Error::NotFound)));
 	}
 
-	#[tokio::test]
-	async fn takeover_after_produced_segment_resumes_at_the_boundary() {
+	#[test]
+	fn takeover_after_produced_segment_resumes_at_the_boundary() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -4246,8 +4245,8 @@ mod test {
 		assert_eq!(recv(&mut sub), 5);
 	}
 
-	#[tokio::test]
-	async fn takeover_keeps_an_explicit_start() {
+	#[test]
+	fn takeover_keeps_an_explicit_start() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -4276,8 +4275,8 @@ mod test {
 		assert_eq!(track_b.subscription().unwrap().start, Some(Position::group(2)));
 	}
 
-	#[tokio::test]
-	async fn switch_validates_boundaries() {
+	#[test]
+	fn switch_validates_boundaries() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (_track_b, consumer_b) = track_pair("b");
 
@@ -4295,8 +4294,8 @@ mod test {
 	/// Repeated failovers must not accumulate a segment per takeover: dead
 	/// predecessors are pruned once the list outgrows [`MAX_SEGMENTS`], and the
 	/// boundary stays where the pruned segments left it rather than collapsing.
-	#[tokio::test]
-	async fn prune_bounds_segments_and_keeps_the_boundary() {
+	#[test]
+	fn prune_bounds_segments_and_keeps_the_boundary() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(None);
 
@@ -4330,8 +4329,8 @@ mod test {
 	/// and is retired even while its track is alive. Route churn with long-lived
 	/// sessions would otherwise grow the list without bound, since nothing
 	/// re-prunes between switches.
-	#[tokio::test]
-	async fn prune_retires_live_predecessors() {
+	#[test]
+	fn prune_retires_live_predecessors() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(None);
 
@@ -4355,8 +4354,8 @@ mod test {
 	/// A route that skips a group for good (SUBSCRIBE_START names a later first
 	/// group) must fail the readers waiting on it over, not stall them: the route
 	/// is alive, so nothing else would ever mark the gap as permanent.
-	#[tokio::test]
-	async fn declared_start_fails_over_a_skipped_group() {
+	#[test]
+	fn declared_start_fails_over_a_skipped_group() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -4400,8 +4399,8 @@ mod test {
 	/// empty successor can re-cap its predecessor lower, and the frames past the
 	/// revised cap belong to the replacement route. Serving them from the stale
 	/// copy would substitute (or duplicate) the replacement's frames.
-	#[tokio::test]
-	async fn latched_reader_follows_a_moved_boundary() {
+	#[test]
+	fn latched_reader_follows_a_moved_boundary() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 		let (track_c, consumer_c) = track_pair("c");
@@ -4435,8 +4434,8 @@ mod test {
 	/// cut them. A bounded number of pruned cursors linger to drain out-of-order
 	/// stragglers; beyond the bound the oldest are cut, subscription, demand,
 	/// and all.
-	#[tokio::test]
-	async fn pruned_cursors_stay_bounded() {
+	#[test]
+	fn pruned_cursors_stay_bounded() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(None);
 
@@ -4469,8 +4468,8 @@ mod test {
 	/// prunes (their re-offer latches the delivering copy, so they still read
 	/// out) while the straggler bound cuts the oldest entries whole, parked group
 	/// and all, so nothing accumulates without bound.
-	#[tokio::test]
-	async fn capped_subscriber_bounds_parked_segments() {
+	#[test]
+	fn capped_subscriber_bounds_parked_segments() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(replay());
 		sub.end_at(..1);
@@ -4514,8 +4513,8 @@ mod test {
 	/// boundary and rolls clean), so the revival is the only way through: a stale
 	/// latch would otherwise error, re-point `dead` at its own segment, and
 	/// un-guard this route by accident.
-	#[tokio::test]
-	async fn buried_route_revives_when_the_copy_lands() {
+	#[test]
+	fn buried_route_revives_when_the_copy_lands() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 		let mut producer = Producer::new();
@@ -4558,8 +4557,8 @@ mod test {
 	/// the very next peek, and loop forever inside one poll. That regression
 	/// surfaces as a hang rather than a failed assertion, which nextest reports
 	/// as a TIMEOUT.
-	#[tokio::test]
-	async fn misaligned_copy_is_lost_without_spinning() {
+	#[test]
+	fn misaligned_copy_is_lost_without_spinning() {
 		let (track, consumer) = track_pair("t");
 		let mut producer = Producer::new();
 		producer.takeover(&consumer).unwrap();
@@ -4587,8 +4586,8 @@ mod test {
 	/// A takeover splices in a track with no groups at all. A peek that stopped at the
 	/// newest segment would read the logical track as empty until the new route
 	/// produces, which is the whole failover window.
-	#[tokio::test]
-	async fn peeks_walk_past_an_empty_segment() {
+	#[test]
+	fn peeks_walk_past_an_empty_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (_track_b, consumer_b) = track_pair("b");
 
@@ -4607,8 +4606,8 @@ mod test {
 	/// A segment's track can hold groups outside the range the segment serves: its own
 	/// edge can race past the cap before the next takeover splices above it. Those
 	/// belong to the newer segment's range, so a peek must not return them.
-	#[tokio::test]
-	async fn peeks_respect_segment_bounds() {
+	#[test]
+	fn peeks_respect_segment_bounds() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (_track_b, consumer_b) = track_pair("b");
 
@@ -4630,8 +4629,8 @@ mod test {
 	/// Seeking forward keeps a latched copy that still covers the new position:
 	/// for a pruned segment it is the only copy left, so clearing it would lose
 	/// frames the reader still holds.
-	#[tokio::test]
-	async fn seek_keeps_a_pruned_latch() {
+	#[test]
+	fn seek_keeps_a_pruned_latch() {
 		let (track, consumer) = track_pair("t");
 		let mut producer = Producer::new();
 		producer.takeover(&consumer).unwrap();
@@ -4667,8 +4666,8 @@ mod test {
 	/// The straggler bound holds on every polling entry point: a subscriber
 	/// driven only through datagrams accumulates a cursor per takeover all the
 	/// same, so the reap must run from the shared sync, not just the group path.
-	#[tokio::test]
-	async fn datagram_poller_bounds_pruned_cursors() {
+	#[test]
+	fn datagram_poller_bounds_pruned_cursors() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(None);
 
@@ -4695,8 +4694,8 @@ mod test {
 	/// the cursor lingers (within the straggler bound) exactly because an empty
 	/// poll is not proof of completeness, and its demand is what keeps the
 	/// upstream serving the stragglers.
-	#[tokio::test]
-	async fn late_group_drains_from_a_pruned_cursor() {
+	#[test]
+	fn late_group_drains_from_a_pruned_cursor() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(replay());
 
@@ -4728,8 +4727,8 @@ mod test {
 	/// covering segments are pruned away the cap is the group's end. Polled
 	/// without draining first, which is exactly the caller the seam check must
 	/// park (and wake) rather than hang.
-	#[tokio::test]
-	async fn finished_resolves_for_a_pruned_bounded_group() {
+	#[test]
+	fn finished_resolves_for_a_pruned_bounded_group() {
 		let (track_a, consumer_a) = track_pair("a");
 		let mut producer = Producer::new();
 		producer.takeover(&consumer_a).unwrap();
@@ -4776,8 +4775,8 @@ mod test {
 	/// delivering copy is latched at hand-out and a clone re-latches it at its
 	/// own position (fanout must not depend on the segment list remembering the
 	/// route), so both read the payload out and end cleanly instead of stalling.
-	#[tokio::test]
-	async fn group_reader_gives_up_below_the_pruned_floor() {
+	#[test]
+	fn group_reader_gives_up_below_the_pruned_floor() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(None);
 
@@ -4819,8 +4818,8 @@ mod test {
 	/// SUBSCRIBE_START floor proves the group will never arrive, so the cap is
 	/// the end. Polled without draining, and woken by the successor's track (the
 	/// seam probe parks on the peek), not just the segment list.
-	#[tokio::test]
-	async fn finished_resolves_when_the_successor_skips_the_seam() {
+	#[test]
+	fn finished_resolves_when_the_successor_skips_the_seam() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 		let mut producer = Producer::new();
@@ -4857,8 +4856,8 @@ mod test {
 	/// A reader that already latched a pruned segment's copy keeps draining it: the
 	/// cursor holds the buffered frames, and a pruned segment produced everything it
 	/// owned, so the copy runs out exactly at the boundary.
-	#[tokio::test]
-	async fn reader_drains_a_pruned_segments_copy() {
+	#[test]
+	fn reader_drains_a_pruned_segments_copy() {
 		let mut producer = Producer::new();
 		let mut sub = producer.consume().subscribe(None);
 
@@ -4890,8 +4889,8 @@ mod test {
 		assert_eq!(read(&mut reading), b"f1");
 	}
 
-	#[tokio::test]
-	async fn switch_replaces_a_run_of_empty_segments() {
+	#[test]
+	fn switch_replaces_a_run_of_empty_segments() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (_track_b, consumer_b) = track_pair("b");
 		let (_track_c, consumer_c) = track_pair("c");
@@ -4915,8 +4914,8 @@ mod test {
 		assert_eq!(producer.state.read().segments.len(), 2);
 	}
 
-	#[tokio::test]
-	async fn abort_drains_before_erroring() {
+	#[test]
+	fn abort_drains_before_erroring() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -4933,8 +4932,8 @@ mod test {
 		assert!(matches!(sub.recv_group().now_or_never().unwrap(), Err(Error::Cancel)));
 	}
 
-	#[tokio::test]
-	async fn terminal_states_are_exclusive() {
+	#[test]
+	fn terminal_states_are_exclusive() {
 		let (_track_a, consumer_a) = track_pair("a");
 		let (_track_b, consumer_b) = track_pair("b");
 
@@ -4960,8 +4959,8 @@ mod test {
 		assert!(matches!(producer.takeover(&consumer_b), Err(Error::Closed)));
 	}
 
-	#[tokio::test]
-	async fn dropped_producer_errors_once_drained() {
+	#[test]
+	fn dropped_producer_errors_once_drained() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -4984,8 +4983,8 @@ mod test {
 	/// A finished logical track ends as its final segment did: a segment cut off
 	/// after the finish (its session died with a group still in flight) is an
 	/// error, not a clean end.
-	#[tokio::test]
-	async fn finished_producer_ends_with_a_dead_final_segment() {
+	#[test]
+	fn finished_producer_ends_with_a_dead_final_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -5005,8 +5004,8 @@ mod test {
 	/// A datagram-only reader of a finished logical track ends with the final
 	/// segment's error. The datagram poll drops a segment error that is not
 	/// `Ok(Some)`, so the finished path has to ask the segment itself.
-	#[tokio::test]
-	async fn finished_producer_ends_datagrams_with_a_dead_final_segment() {
+	#[test]
+	fn finished_producer_ends_datagrams_with_a_dead_final_segment() {
 		let (track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -5029,8 +5028,8 @@ mod test {
 		assert!(matches!(result, Err(Error::Timeout)));
 	}
 
-	#[tokio::test]
-	async fn dropped_producer_keeps_a_live_segment_serving() {
+	#[test]
+	fn dropped_producer_keeps_a_live_segment_serving() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -5050,8 +5049,8 @@ mod test {
 		assert!(matches!(result, Ok(None)));
 	}
 
-	#[tokio::test]
-	async fn dropped_producer_ends_finished_waiters_with_the_segment() {
+	#[test]
+	fn dropped_producer_ends_finished_waiters_with_the_segment() {
 		for clean in [true, false] {
 			let (track_a, consumer_a) = track_pair("a");
 
@@ -5082,8 +5081,8 @@ mod test {
 	/// Waiting for the end, or polling datagrams, must not consume the final
 	/// segment: groups still queued in its cursor are delivered afterwards, for a
 	/// finished producer and a dropped one alike.
-	#[tokio::test]
-	async fn end_waiters_leave_queued_groups_readable() {
+	#[test]
+	fn end_waiters_leave_queued_groups_readable() {
 		for dropped in [false, true] {
 			let (mut track_a, consumer_a) = track_pair("a");
 
@@ -5109,8 +5108,8 @@ mod test {
 		}
 	}
 
-	#[tokio::test]
-	async fn dropped_producer_ends_datagrams() {
+	#[test]
+	fn dropped_producer_ends_datagrams() {
 		let (track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -5127,8 +5126,8 @@ mod test {
 		assert!(matches!(result, Err(Error::Dropped)));
 	}
 
-	#[tokio::test]
-	async fn evicted_parked_group_wakes_the_clean_end() {
+	#[test]
+	fn evicted_parked_group_wakes_the_clean_end() {
 		use std::task::Context;
 
 		let (mut track_a, consumer_a) = track_pair("a");
@@ -5167,8 +5166,8 @@ mod test {
 	/// the poll that parks it is the same poll that sees the segment finish, so
 	/// the group must be watched from the moment it parks, not from the next
 	/// poll (which nothing would trigger).
-	#[tokio::test]
-	async fn straggler_parked_after_finish_still_wakes() {
+	#[test]
+	fn straggler_parked_after_finish_still_wakes() {
 		use std::task::Context;
 
 		let (mut track_a, consumer_a) = track_pair("a");
@@ -5198,8 +5197,8 @@ mod test {
 		assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(None))));
 	}
 
-	#[tokio::test]
-	async fn release_restarts_unbounded() {
+	#[test]
+	fn release_restarts_unbounded() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -5223,8 +5222,8 @@ mod test {
 		assert_eq!(recv(&mut sub), 2);
 	}
 
-	#[tokio::test]
-	async fn release_resets_the_pruned_floor() {
+	#[test]
+	fn release_resets_the_pruned_floor() {
 		let mut producer = Producer::new();
 
 		// Enough takeovers that the front segments prune, leaving a floor.
@@ -5247,7 +5246,7 @@ mod test {
 		assert_eq!(recv(&mut sub), 0);
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn fetch_fails_when_the_producer_dies_segmentless() {
 		let producer = Producer::new();
 		let consumer = producer.consume();
@@ -5262,7 +5261,7 @@ mod test {
 		assert!(matches!(fetch.await, Err(Error::NotFound)));
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn info_fails_when_the_producer_dies_segmentless() {
 		let producer = Producer::new();
 		let consumer = producer.consume();
@@ -5275,8 +5274,8 @@ mod test {
 		assert!(matches!(info.await, Err(Error::Dropped)));
 	}
 
-	#[tokio::test]
-	async fn start_at_drops_parked_groups_below_the_floor() {
+	#[test]
+	fn start_at_drops_parked_groups_below_the_floor() {
 		let (mut track_a, consumer_a) = track_pair("a");
 
 		let mut producer = Producer::new();
@@ -5298,8 +5297,8 @@ mod test {
 		recv_pending(&mut sub);
 	}
 
-	#[tokio::test]
-	async fn demand_intersects_subscriber_end_with_boundary() {
+	#[test]
+	fn demand_intersects_subscriber_end_with_boundary() {
 		let (track_a, consumer_a) = track_pair("a");
 		let (track_b, consumer_b) = track_pair("b");
 
@@ -5322,8 +5321,8 @@ mod test {
 		assert_eq!(track_b.subscription().unwrap().end, Position::after_group(3));
 	}
 
-	#[tokio::test]
-	async fn subscribers_read_independently() {
+	#[test]
+	fn subscribers_read_independently() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -5347,8 +5346,8 @@ mod test {
 		assert!(sub1.is_clone(&sub2));
 	}
 
-	#[tokio::test]
-	async fn latest_clamps_to_segment_bounds() {
+	#[test]
+	fn latest_clamps_to_segment_bounds() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 
@@ -5377,8 +5376,8 @@ mod test {
 		assert_eq!(consumer.latest(), Some(3));
 	}
 
-	#[tokio::test]
-	async fn datagrams_come_from_the_newest_segment() {
+	#[test]
+	fn datagrams_come_from_the_newest_segment() {
 		let (mut track_a, consumer_a) = track_pair("a");
 		let (mut track_b, consumer_b) = track_pair("b");
 

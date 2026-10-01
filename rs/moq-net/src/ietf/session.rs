@@ -917,20 +917,19 @@ mod tests {
 	/// Driven through `start` rather than `run_subscribe_namespace` directly: the
 	/// stream surfaces the error either way, so only this loop's handling of it decides
 	/// between a close and a warning, and a test below the loop would pass regardless.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_namespace_without_a_hop_path_closes_the_session() {
 		const VERSION: Version = Version::Draft19;
 
 		// A driver that swallows the violation parks forever instead of failing, so
 		// bound it: paused time makes the deadline fire the moment nothing else can run.
-		tokio::time::pause();
 
 		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
 		let session = crate::lite::test_transport::ScriptedSession::new(namespace_without_hop_path(VERSION).await);
 		let log = session.log.clone();
 
 		let (driver, _goaway) = start(Config {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session,
 			setup: None,
 			request_id_max: None,
@@ -954,7 +953,7 @@ mod tests {
 		})
 		.expect("start the session");
 
-		let err = tokio::time::timeout(std::time::Duration::from_secs(10), driver)
+		let err = moq_net_sim::timeout(std::time::Duration::from_secs(10), driver)
 			.await
 			.expect("the session ended rather than carrying on")
 			.expect_err("a malformed NAMESPACE fails the session");
@@ -972,7 +971,7 @@ mod tests {
 	/// `start` so the per-prefix fan-out is exercised, not just one stream in
 	/// isolation: a loop that opened a single stream would still satisfy a test that
 	/// called `run_subscribe_namespace` itself.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn every_permitted_prefix_gets_its_own_subscribe_namespace() {
 		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
 		let scope: crate::Patterns = ["cam", "mic"]
@@ -988,7 +987,7 @@ mod tests {
 		let log = session.log.clone();
 
 		let (driver, _goaway) = start(Config {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session,
 			setup: None,
 			request_id_max: None,
@@ -1004,14 +1003,14 @@ mod tests {
 			peer_declared: Some(peer::Peer::default()),
 		})
 		.expect("start the session");
-		let _driver = tokio::spawn(driver);
+		let _driver = moq_net_sim::spawn(driver);
 
 		// Both requests are written before either peer response, which never comes.
 		for _ in 0..100 {
 			if occurrences(&log, b"cam") > 0 && occurrences(&log, b"mic") > 0 {
 				break;
 			}
-			tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+			moq_net_sim::sleep(std::time::Duration::from_millis(5)).await;
 		}
 
 		assert_eq!(occurrences(&log, b"cam"), 1, "one SUBSCRIBE_NAMESPACE for cam");
@@ -1039,7 +1038,7 @@ mod tests {
 		let log = session.log.clone();
 
 		let (driver, _goaway) = start(Config {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session,
 			setup: None,
 			request_id_max: None,
@@ -1054,14 +1053,14 @@ mod tests {
 			peer_declared,
 		})
 		.expect("start the session");
-		let _driver = tokio::spawn(driver);
+		let _driver = moq_net_sim::spawn(driver);
 
 		// Drive until the announce lands, rather than betting on one fixed window.
 		for _ in 0..ANNOUNCE_TURNS {
 			if occurrences(&log, b"solo-cam") > 0 {
 				break;
 			}
-			tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+			moq_net_sim::sleep(std::time::Duration::from_millis(1)).await;
 		}
 
 		occurrences(&log, b"solo-cam")
@@ -1069,7 +1068,7 @@ mod tests {
 
 	/// The peer's SETUP decides whether an advertisement may go out unasked, so nothing
 	/// can be sent before it arrives.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn no_announce_before_the_peer_setup() {
 		assert_eq!(
 			announce_occurrences(None).await,
@@ -1080,7 +1079,7 @@ mod tests {
 
 	/// A peer that requires solicitation hears nothing until it asks, which is the
 	/// behavior the IETF draft describes for a relay.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_peer_requiring_solicitation_is_not_told_unasked() {
 		let declared = peer::Peer {
 			solicit: Some(true),
@@ -1097,7 +1096,7 @@ mod tests {
 	/// A peer that declared nothing is told without being asked. Every relay that never
 	/// sends SUBSCRIBE_NAMESPACE depends on this, and the session is what wires the
 	/// unsolicited loop up at all.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_peer_declaring_nothing_is_told_unasked() {
 		assert_eq!(
 			announce_occurrences(Some(peer::Peer::default())).await,
@@ -1140,13 +1139,12 @@ mod tests {
 
 		// A driver that survives parks forever, so bound it: paused time makes the
 		// deadline fire the moment nothing else can run.
-		tokio::time::pause();
 
 		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
 		let log = session.log.clone();
 
 		let (driver, _goaway) = start(Config {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session,
 			setup: None,
 			request_id_max: None,
@@ -1164,19 +1162,19 @@ mod tests {
 		})
 		.expect("start the session");
 
-		tokio::time::timeout(std::time::Duration::from_secs(10), driver)
+		moq_net_sim::timeout(std::time::Duration::from_secs(10), driver)
 			.await
 			.expect_err("the session ended over one dead stream");
 
 		assert_eq!(log.closes(), vec![], "nothing may close the transport");
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_uni_stream_dead_before_its_type_does_not_end_the_session() {
 		a_dead_incoming_stream_is_not_fatal(crate::lite::test_transport::DeadStreamSession::unis(1)).await;
 	}
 
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_bidi_stream_dead_before_its_header_does_not_end_the_session() {
 		a_dead_incoming_stream_is_not_fatal(crate::lite::test_transport::DeadStreamSession::bis(1)).await;
 	}
@@ -1215,7 +1213,7 @@ mod tests {
 		let (tasks, _task_set) = TaskSet::new();
 		let peer_setup = peer::PeerSetup::default();
 		let subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			origin,
 			Control::new(None, true),
@@ -1244,14 +1242,14 @@ mod tests {
 			if !log.stops().is_empty() {
 				break;
 			}
-			tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+			moq_net_sim::sleep(std::time::Duration::from_millis(1)).await;
 		}
 
 		log
 	}
 
 	/// A late group must reach the dispatch loop and stop with CANCELLED.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_group_for_a_retired_alias_is_stopped_with_cancelled() {
 		let log = dispatch_uni(subgroup_header(Version::Draft19, 7).await, Some(7)).await;
 
@@ -1263,7 +1261,7 @@ mod tests {
 		assert_eq!(log.closes(), vec![], "one dropped group may not close the session");
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn unknown_uni_type_does_not_claim_the_session_closed() {
 		let log = dispatch_uni(vec![0], None).await;
 		assert_eq!(log.stops(), vec![crate::ietf::error::INTERNAL_ERROR]);
@@ -1323,7 +1321,7 @@ mod tests {
 	///
 	/// Driven through `start` because only the full loop shows the consequence, the read
 	/// task propagating the classifier's error.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_repeated_publish_namespace_done_does_not_end_the_session() {
 		const VERSION: Version = Version::Draft14;
 
@@ -1338,7 +1336,7 @@ mod tests {
 			.expect("open the control stream");
 
 		let (driver, _goaway) = start(Config {
-			runtime: crate::time::Clock::tokio(),
+			runtime: crate::time::Clock::sim(),
 			session,
 			setup: Some(setup),
 			request_id_max: None,
@@ -1353,14 +1351,14 @@ mod tests {
 			peer_declared: None,
 		})
 		.expect("start the session");
-		let driver = tokio::spawn(driver);
+		let driver = moq_net_sim::spawn(driver);
 
 		let accepted = publish_namespace_ok(RequestId(1)).await;
 		for _ in 0..ANNOUNCE_TURNS {
 			if occurrences(&log, &accepted) > 0 && consumer.get_broadcast("room/host").is_none() {
 				break;
 			}
-			tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+			moq_net_sim::sleep(std::time::Duration::from_millis(1)).await;
 		}
 
 		assert_eq!(occurrences(&log, &accepted), 1, "the advertisement was not accepted");

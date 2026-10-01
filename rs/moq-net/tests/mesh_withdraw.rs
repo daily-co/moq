@@ -14,7 +14,7 @@ use support::harness::{MockConnectOptions, MockPair, connect_mock};
 
 fn produce_origin(hop: u64) -> origin::Producer {
 	let (producer, driver) = origin::Producer::new(origin::Config::new(Hop::new(hop).unwrap()));
-	tokio::spawn(support::harness::run(driver));
+	support::harness::spawn(driver);
 	producer
 }
 
@@ -42,7 +42,7 @@ enum Kind {
 /// timeout fires only once every task is idle.
 async fn drain(announced: &mut announce::Consumer) -> HashMap<String, Vec<Kind>> {
 	let mut updates = HashMap::<String, Vec<Kind>>::new();
-	while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), announced.next()).await {
+	while let Ok(Some(event)) = moq_net_sim::timeout(Duration::from_secs(1), announced.next()).await {
 		let (kind, announce) = match event {
 			announce::Event::Start(announce) => (Kind::Start, announce),
 			announce::Event::Update(announce) => (Kind::Update, announce),
@@ -112,12 +112,12 @@ fn ring_with_chords(n: usize) -> Vec<(usize, usize)> {
 /// Every relay neighbors the publisher's, so each hears the withdrawal first-hand
 /// and drops every path derived from it at once. Lite04 names the peer only in
 /// the chain, later versions in the announce handshake too.
-#[tokio::test(start_paused = true)]
+#[moq_net_sim::test]
 async fn full_mesh_withdraw_retracts_once_lite04() {
 	full_mesh_withdraw_retracts_once("moq-lite-04").await;
 }
 
-#[tokio::test(start_paused = true)]
+#[moq_net_sim::test]
 async fn full_mesh_withdraw_retracts_once_lite06() {
 	full_mesh_withdraw_retracts_once("moq-lite-06").await;
 }
@@ -139,7 +139,7 @@ async fn full_mesh_withdraw_retracts_once(version: &str) {
 /// why, so it can still pass through a stale path or two. Every broadcast must still
 /// end retracted, and republishing from other relays must reach the watcher again:
 /// no withdrawal outlives the peer announcing the path again.
-#[tokio::test(start_paused = true)]
+#[moq_net_sim::test]
 async fn partial_mesh_withdraw_then_republish() {
 	let mut mesh = Mesh::new("moq-lite-06", 12, &ring_with_chords(12)).await;
 	let broadcasts = mesh.publish(100, 0).await;

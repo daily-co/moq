@@ -13,7 +13,7 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Build an origin producer, spawning its driver on the ambient runtime.
 fn produce_origin(hop: u64) -> moq_net::origin::Producer {
 	let (producer, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::new(Hop::new(hop).unwrap()));
-	tokio::spawn(support::harness::run(driver));
+	support::harness::spawn(driver);
 	producer
 }
 
@@ -30,10 +30,10 @@ async fn read_all(group: &mut group::Consumer) -> Vec<Vec<u8>> {
 /// The relay cancels its idle upstream subscription, resetting that group mid-transfer.
 /// Resuming the rejoin at the frame where the reset landed would ask upstream for a tail
 /// whose head is gone, so the group would never reach the returning reader.
-#[tokio::test]
+#[moq_net_sim::test]
 async fn rejoin_recovers_the_group_reset_on_leave() {
 	for version in ["moq-lite-05", "moq-lite-06"] {
-		tokio::time::timeout(TEST_TIMEOUT, async {
+		moq_net_sim::timeout(TEST_TIMEOUT, async {
 			let publisher = produce_origin(1);
 			let relay = produce_origin(2);
 

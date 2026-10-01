@@ -1,4 +1,3 @@
-use crate::runtime::Timers as _;
 use std::{
 	collections::{HashMap, hash_map::Entry},
 	task::{Poll, ready},
@@ -497,7 +496,7 @@ async fn resolve_track_alias(
 	aliases: kio::Consumer<AliasTable>,
 	alias: u64,
 ) -> Result<RequestId, Error> {
-	let mut timeout = crate::runtime::Deadline::after(runtime, TRACK_ALIAS_TIMEOUT);
+	let mut timeout = crate::time::Deadline::after(runtime, TRACK_ALIAS_TIMEOUT);
 	kio::wait(|waiter| {
 		let resolved = aliases.poll(waiter, |aliases| match aliases.map.get(&alias) {
 			Some(Alias::Active(request_id)) => Poll::Ready(Ok(*request_id)),
@@ -3123,14 +3122,14 @@ mod tests {
 		responses
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn bare_fin_requires_publish_done() {
 		for clean in [false, true] {
 			check_publish_fin(fin_responses(clean), clean).await;
 		}
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	#[ignore = "requires Bun; run by just test bare-fin in interop CI"]
 	async fn bare_fin_interop() {
 		for clean in [false, true] {
@@ -3139,15 +3138,12 @@ mod tests {
 		}
 	}
 
-	/// The tokio-backed test runtime. Its transport parameter is phantom, so one
-	/// type serves every fake session in this module.
-
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn track_alias_waits_for_control_message() {
-		let runtime = crate::time::Clock::tokio();
+		let runtime = crate::time::Clock::sim();
 		let aliases = TrackAliases::default();
 		let pending = resolve_track_alias(&runtime, aliases.consume(), 7);
-		tokio::pin!(pending);
+		let mut pending = std::pin::pin!(pending);
 
 		assert!(poll!(&mut pending).is_pending());
 
@@ -3158,7 +3154,7 @@ mod tests {
 
 	/// SUBSCRIBE_OK has not accepted the track, so the map holds no producer.
 	/// Abort still has to reject the parked origin request with the session error.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn session_death_rejects_a_subscribe_still_setting_up() {
 		let broadcast = crate::broadcast::Info::new().produce();
 		let mut dynamic = broadcast.dynamic();
@@ -3195,17 +3191,17 @@ mod tests {
 		);
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn unknown_track_alias_times_out() {
 		let aliases = TrackAliases::default();
 		assert!(matches!(
-			resolve_track_alias(&crate::time::Clock::tokio(), aliases.consume(), 7).await,
+			resolve_track_alias(&crate::time::Clock::sim(), aliases.consume(), 7).await,
 			Err(Error::NotFound)
 		));
 	}
 
 	async fn settle() {
-		tokio::time::sleep(Duration::from_millis(1)).await;
+		moq_net_sim::sleep(Duration::from_millis(1)).await;
 	}
 
 	fn occurrences(log: &crate::lite::test_transport::Log, needle: &[u8]) -> usize {
@@ -3226,7 +3222,7 @@ mod tests {
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 
 		Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			origin,
 			Control::new(None, false),
@@ -3247,7 +3243,7 @@ mod tests {
 	///
 	/// Writing the option is the proof of support, whichever value it carries: an explicit
 	/// 0 says "no requirement of my own" and still says "I read yours".
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_announce_from_a_peer_that_implements_solicit_is_fatal() {
 		assert!(
 			unsolicited_is_a_violation(Some(true), Version::Draft17),
@@ -3262,7 +3258,7 @@ mod tests {
 	/// A peer that declared nothing has never heard of the extension, so it cannot have
 	/// honored ours. Announcing at us is what it is supposed to do, and #2730 is what
 	/// happens when nobody does.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_announce_from_a_peer_that_declared_nothing_is_fine() {
 		assert!(!unsolicited_is_a_violation(None, Version::Draft17));
 	}
@@ -3270,7 +3266,7 @@ mod tests {
 	/// Draft-14/15 have no inline NAMESPACE, so a PUBLISH_NAMESPACE request is also how a
 	/// peer answers our own SUBSCRIBE_NAMESPACE. The message cannot say which it is, so
 	/// nothing there is enforceable: our own publisher advertises exactly this way.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_legacy_announce_is_never_a_violation() {
 		for version in [Version::Draft14, Version::Draft15] {
 			assert!(
@@ -3283,7 +3279,7 @@ mod tests {
 	/// A rooted subscriber asks the peer for its permitted SCOPE. The root names where
 	/// replies mount on our side, which is meaningless to a peer outside our namespace,
 	/// so sending it asks for a prefix that matches nothing there.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_rooted_subscriber_asks_for_its_scope_not_its_root() {
 		let origin = crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce();
 		let scope = crate::Patterns::from(crate::Pattern::subtree("cam").unwrap());
@@ -3298,7 +3294,7 @@ mod tests {
 		let peer_setup = peer::PeerSetup::default();
 		peer_setup.set(peer::Peer::default());
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			scoped,
 			Control::new(None, false),
@@ -3362,7 +3358,7 @@ mod tests {
 	/// Driven through the real response stream rather than by recomputing the join
 	/// here: a test that did its own `prefix.join(suffix)` would still pass if the
 	/// NAMESPACE arm went back to joining the root.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_rooted_subscriber_mounts_a_reply_under_its_root_once() {
 		const VERSION: Version = Version::Draft18;
 
@@ -3378,7 +3374,7 @@ mod tests {
 		let peer_setup = peer::PeerSetup::default();
 		peer_setup.set(peer::Peer::default());
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			scoped,
 			Control::new(None, false),
@@ -3419,7 +3415,7 @@ mod tests {
 	/// MoQ Active Count is negotiated, so a REQUEST_OK that breaks the negotiation
 	/// either way is the peer's fault: a count we cannot rely on, or one missing where we
 	/// would otherwise wait on it forever.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_count_the_negotiation_did_not_promise_is_a_violation() {
 		const VERSION: Version = Version::Draft18;
 
@@ -3446,7 +3442,7 @@ mod tests {
 				..Default::default()
 			});
 			let mut subscriber = Subscriber::new(
-				crate::time::Clock::tokio(),
+				crate::time::Clock::sim(),
 				session.clone(),
 				origin,
 				Control::new(None, false),
@@ -3482,15 +3478,15 @@ mod tests {
 	/// A cancelled subscription leaves its alias behind, so the groups the publisher is
 	/// still sending are discarded at once instead of stalling out the timeout and being
 	/// reported as unknown (draft-19 section 11.1).
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn retired_alias_drops_late_groups_immediately() {
 		let aliases = TrackAliases::default();
 		insert_track_alias(&aliases, 7, RequestId(11)).unwrap();
 		retire_track_alias(&aliases, 7, RequestId(11));
 
-		let runtime = crate::time::Clock::tokio();
+		let runtime = crate::time::Clock::sim();
 		let resolve = resolve_track_alias(&runtime, aliases.consume(), 7);
-		tokio::pin!(resolve);
+		let mut resolve = std::pin::pin!(resolve);
 
 		assert!(
 			matches!(poll!(&mut resolve), std::task::Poll::Ready(Err(Error::Cancel))),
@@ -3506,13 +3502,13 @@ mod tests {
 	/// Covers the error this path produces and the code it maps to, not the dispatch loop
 	/// that sends it. `session::a_group_for_a_retired_alias_is_stopped_with_cancelled`
 	/// drives that loop over a real receive stream.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_retired_alias_maps_to_the_cancelled_code() {
 		let aliases = TrackAliases::default();
 		insert_track_alias(&aliases, 7, RequestId(11)).unwrap();
 		retire_track_alias(&aliases, 7, RequestId(11));
 
-		let err = resolve_track_alias(&crate::time::Clock::tokio(), aliases.consume(), 7)
+		let err = resolve_track_alias(&crate::time::Clock::sim(), aliases.consume(), 7)
 			.await
 			.expect_err("a retired alias resolves to a cancellation");
 
@@ -3564,7 +3560,7 @@ mod tests {
 		std::mem::forget(task_set);
 
 		let subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			crate::lite::test_transport::SinkSession::new(Default::default()),
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
@@ -3643,7 +3639,7 @@ mod tests {
 	/// until STOP_SENDING arrives on the direction it writes (sections 3.3.3 and 5.1.1),
 	/// so a subscriber that only finishes leaves it feeding an alias forever. That is what
 	/// turns a routine unsubscribe into an endless "unknown track alias" stream.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn cancelling_a_subscription_stops_the_publisher() {
 		for version in [Version::Draft16, Version::Draft20] {
 			let log = cancel_a_subscription(version).await;
@@ -3665,7 +3661,7 @@ mod tests {
 	/// Draft-14 through 16 have an UNSUBSCRIBE message, and draft-16 section 5.1.1 makes it
 	/// the thing that lets the publisher destroy the subscription. Resetting the stream
 	/// without it leaves a peer that predates draft-17 serving the track forever.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_legacy_cancel_sends_unsubscribe() {
 		let log = cancel_a_subscription(Version::Draft16).await;
 		assert!(
@@ -3686,7 +3682,7 @@ mod tests {
 	/// polled. The publisher destroyed the request when it sent the error, so treating that
 	/// as abandonment would cancel a request that no longer exists and name a dead id back at
 	/// a peer entitled to object. The answer wins.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_ready_rejection_beats_local_abandonment() {
 		const VERSION: Version = Version::Draft16;
 
@@ -3715,7 +3711,7 @@ mod tests {
 
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
@@ -3742,11 +3738,11 @@ mod tests {
 		drop(track);
 		drop(consumer);
 
-		let serving = tokio::spawn(async move {
+		let serving = moq_net_sim::spawn(async move {
 			subscriber.run_subscribe(Path::new("broadcast"), dynamic, request).await;
 		});
 
-		tokio::time::timeout(std::time::Duration::from_secs(1), serving)
+		moq_net_sim::timeout(std::time::Duration::from_secs(1), serving)
 			.await
 			.expect("run_subscribe did not finish")
 			.unwrap();
@@ -3761,7 +3757,7 @@ mod tests {
 	/// independent of the request stream. If the last consumer leaves in that window, the
 	/// subscriber still owes it a cancellation: walking away silently is what leaves it
 	/// serving a track nobody reads.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn abandoning_before_subscribe_ok_still_cancels() {
 		const VERSION: Version = Version::Draft16;
 
@@ -3771,7 +3767,7 @@ mod tests {
 
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
@@ -3792,7 +3788,7 @@ mod tests {
 
 		let request = dynamic.requested_track().await.expect("no track requested");
 
-		let serving = tokio::spawn(async move {
+		let serving = moq_net_sim::spawn(async move {
 			subscriber.run_subscribe(Path::new("broadcast"), dynamic, request).await;
 		});
 
@@ -3804,7 +3800,7 @@ mod tests {
 		drop(track);
 		drop(consumer);
 
-		tokio::time::timeout(std::time::Duration::from_secs(1), serving)
+		moq_net_sim::timeout(std::time::Duration::from_secs(1), serving)
 			.await
 			.expect("run_subscribe parked waiting for a response that never came")
 			.unwrap();
@@ -3824,7 +3820,7 @@ mod tests {
 	/// SUBSCRIBE_OK has not arrived yet is in flight too: the publisher may already be
 	/// serving it. The broadcast ending in that window must not abort the track or cancel
 	/// the subscription.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_retraction_before_subscribe_ok_keeps_the_subscription() {
 		const VERSION: Version = Version::Draft16;
 
@@ -3834,7 +3830,7 @@ mod tests {
 
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
@@ -3855,7 +3851,7 @@ mod tests {
 
 		let request = dynamic.requested_track().await.expect("no track requested");
 
-		let serving = tokio::spawn(async move {
+		let serving = moq_net_sim::spawn(async move {
 			subscriber.run_subscribe(Path::new("broadcast"), dynamic, request).await;
 		});
 
@@ -3878,7 +3874,7 @@ mod tests {
 		drop(subscription);
 		drop(track);
 		drop(consumer);
-		tokio::time::timeout(std::time::Duration::from_secs(1), serving)
+		moq_net_sim::timeout(std::time::Duration::from_secs(1), serving)
 			.await
 			.expect("run_subscribe parked after its reader left")
 			.unwrap();
@@ -3915,7 +3911,7 @@ mod tests {
 	/// nothing about the path production takes: the virtual writer's reset is a no-op and
 	/// its close returns as soon as the bytes are queued, so an adapter that dropped them
 	/// would look identical.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_legacy_cancel_reaches_the_control_stream() {
 		const VERSION: Version = Version::Draft16;
 
@@ -3931,13 +3927,13 @@ mod tests {
 		let control_stream = Stream::open(&mut session.clone(), VERSION).await.unwrap();
 		let running = adapter.clone();
 		let (_goaway_handle, goaway) = crate::goaway::Handle::new(true);
-		tokio::spawn(async move {
+		moq_net_sim::spawn(async move {
 			let _ = running.run(control_stream.reader, control_stream.writer, goaway).await;
 		});
 
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			adapter,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			control,
@@ -3958,7 +3954,7 @@ mod tests {
 
 		let request = dynamic.requested_track().await.expect("no track requested");
 
-		let serving = tokio::spawn(async move {
+		let serving = moq_net_sim::spawn(async move {
 			subscriber.run_subscribe(Path::new("broadcast"), dynamic, request).await;
 		});
 
@@ -3967,7 +3963,7 @@ mod tests {
 		drop(track);
 		drop(consumer);
 
-		tokio::time::timeout(std::time::Duration::from_secs(1), serving)
+		moq_net_sim::timeout(std::time::Duration::from_secs(1), serving)
 			.await
 			.expect("run_subscribe did not finish")
 			.unwrap();
@@ -3998,7 +3994,7 @@ mod tests {
 	/// the new subscription. Those versions carry requests over the control stream adapter,
 	/// whose virtual streams drop silently, so UNSUBSCRIBE is the only way the publisher
 	/// ever learns to stop serving it.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_legacy_shared_alias_is_unsubscribed() {
 		let log = cancel_a_subscription_inner(Version::Draft16, true).await;
 
@@ -4012,7 +4008,7 @@ mod tests {
 	/// finished is still retransmitting, so the writer's Drop reset would discard the message
 	/// before the peer read it. Closing consumes the writer, which is what removes that
 	/// fallback, so a reset here means the cancellation never landed.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn cancelling_does_not_reset_away_the_unsubscribe() {
 		for version in [Version::Draft16, Version::Draft20] {
 			let log = cancel_a_subscription(version).await;
@@ -4053,7 +4049,7 @@ mod tests {
 
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
@@ -4097,7 +4093,7 @@ mod tests {
 		// subscription reached Established rather than assume it.
 		let probe = subscriber.clone();
 
-		let serving = tokio::spawn(async move {
+		let serving = moq_net_sim::spawn(async move {
 			subscriber.run_subscribe(Path::new("broadcast"), dynamic, request).await;
 		});
 
@@ -4117,7 +4113,7 @@ mod tests {
 		drop(track);
 		drop(consumer);
 
-		tokio::time::timeout(std::time::Duration::from_secs(1), serving)
+		moq_net_sim::timeout(std::time::Duration::from_secs(1), serving)
 			.await
 			.expect("run_subscribe did not finish")
 			.unwrap();
@@ -4154,7 +4150,7 @@ mod tests {
 		let session = crate::lite::test_transport::ScriptedSession::new(subscribe_ok);
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
@@ -4175,7 +4171,7 @@ mod tests {
 		let request = dynamic.requested_track().await.expect("no track requested");
 
 		let probe = subscriber.clone();
-		let serving = tokio::spawn(async move {
+		let serving = moq_net_sim::spawn(async move {
 			subscriber.run_subscribe(Path::new("broadcast"), dynamic, request).await;
 		});
 
@@ -4204,7 +4200,7 @@ mod tests {
 	/// The publisher opens no fetch stream for an empty range, so a fill against a track
 	/// with no content is owed nothing. Leaving it outstanding would withhold every later
 	/// group behind a head that is never coming.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn an_empty_track_settles_the_fill() {
 		assert!(
 			!fill_after_subscribe_ok(None, Some(37)).await,
@@ -4214,7 +4210,7 @@ mod tests {
 
 	/// A track with content does owe one, so the fill stays outstanding until its fetch
 	/// stream arrives.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_track_with_content_still_awaits_its_fill() {
 		assert!(
 			fill_after_subscribe_ok(Some(ietf::Location { group: 3, object: 4 }), Some(37)).await,
@@ -4222,7 +4218,7 @@ mod tests {
 		);
 	}
 
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn an_older_peer_without_priority_property_uses_wire_default() {
 		assert!(!fill_after_subscribe_ok(None, None).await);
 	}
@@ -4247,7 +4243,7 @@ mod tests {
 	/// moq-transport carries no hop ids, so a peer's broadcasts are marked
 	/// anonymous (hop 0). An identity assigned via `Client::with_peer_hop` is
 	/// stored as `via` for split-horizon and never written into the chain.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn assigned_peer_hop_attributes_announces() {
 		let session = crate::lite::test_transport::SinkSession::new(Default::default());
 		let assigned = crate::Hop::new(777).unwrap();
@@ -4256,7 +4252,7 @@ mod tests {
 		let consumer = origin.consume();
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			origin,
 			Control::new(None, false),
@@ -4290,7 +4286,7 @@ mod tests {
 	/// claiming the path: taking it over would leave only a route we refuse to
 	/// advertise back to the peer, and the publish direction would withdraw the
 	/// announce it just made.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn reflected_announce_does_not_evict_the_source_we_publish() {
 		let session = crate::lite::test_transport::SinkSession::new(Default::default());
 		let peer = crate::Hop::new(777).unwrap();
@@ -4317,7 +4313,7 @@ mod tests {
 		// hop chain of its own.
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			origin,
 			Control::new(None, false),
@@ -4344,7 +4340,7 @@ mod tests {
 	/// Two sessions assigned the same identity announce the same anonymous chain.
 	/// The cursor treats that as an identical re-announce, so a reconnect is
 	/// invisible and retracting the stale session leaves the fresh route standing.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn reconnecting_peer_joins_the_front_it_replaces() {
 		let peer = crate::Hop::new(777).unwrap();
 		let self_origin = crate::Hop::new(1).unwrap();
@@ -4357,7 +4353,7 @@ mod tests {
 			let (tasks, task_set) = crate::util::TaskSet::new();
 			std::mem::forget(task_set);
 			let mut subscriber = Subscriber::new(
-				crate::time::Clock::tokio(),
+				crate::time::Clock::sim(),
 				crate::lite::test_transport::SinkSession::new(Default::default()),
 				origin.clone(),
 				Control::new(None, false),
@@ -4404,7 +4400,7 @@ mod tests {
 		std::mem::forget(task_set);
 
 		let subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			origin.clone(),
 			Control::new(None, false),
@@ -4433,7 +4429,7 @@ mod tests {
 	/// A negotiated advertisement carries the whole path and its accumulated cost, and
 	/// the receiving relay charges its own link on top (saturating, so an absurd
 	/// upstream value ranks last rather than wrapping to best).
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn cluster_advert_becomes_a_route_with_the_link_charged() {
 		let (subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4520,7 +4516,7 @@ mod tests {
 	///
 	/// Driven through the real exit path rather than by calling `stop_announce`: a test
 	/// that picked the detach itself would still pass if the stream stopped using it.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_lost_namespace_stream_closes_the_broadcast() {
 		const VERSION: Version = Version::Draft18;
 
@@ -4537,7 +4533,7 @@ mod tests {
 		let peer_setup = peer::PeerSetup::default();
 		peer_setup.set(peer::Peer::default());
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			origin,
 			Control::new(None, false),
@@ -4566,7 +4562,7 @@ mod tests {
 	/// NAMESPACE has no REQUEST_UPDATE, so a peer reprices one by re-sending it on the
 	/// SUBSCRIBE_NAMESPACE stream. The repeat is neither a duplicate nor a violation: it
 	/// replaces the advertisement in place, and the route is never retracted for it.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_re_sent_namespace_reprices_in_place() {
 		const VERSION: Version = Version::Draft19;
 
@@ -4614,7 +4610,7 @@ mod tests {
 			..Default::default()
 		});
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			origin,
 			Control::new(None, false),
@@ -4648,7 +4644,7 @@ mod tests {
 
 	/// The peer explicitly retracting a namespace ends the broadcast immediately: it
 	/// said the namespace is gone, so a later create at the path is new content.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn an_explicit_namespace_done_closes_the_broadcast() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4668,7 +4664,7 @@ mod tests {
 	/// v14-16 withdraw a PUBLISH_NAMESPACE with PUBLISH_NAMESPACE_DONE, which the adapter
 	/// delivers as a message before it FINs the virtual stream. Reading it as a stray
 	/// message closes the whole session over a routine unannounce.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_publish_namespace_done_retracts_without_faulting_the_session() {
 		const VERSION: Version = Version::Draft14;
 
@@ -4690,7 +4686,7 @@ mod tests {
 		let (tasks, task_set) = crate::util::TaskSet::new();
 		std::mem::forget(task_set);
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			origin,
 			Control::new(None, false),
@@ -4727,7 +4723,7 @@ mod tests {
 	///
 	/// Driven through the real exit path rather than by calling `stop_announce`: a test
 	/// that picked the detach itself would still pass if the stream stopped using it.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_broken_publish_namespace_stream_closes_the_broadcast() {
 		const VERSION: Version = Version::Draft19;
 
@@ -4745,7 +4741,7 @@ mod tests {
 		let (tasks, task_set) = crate::util::TaskSet::new();
 		std::mem::forget(task_set);
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			origin,
 			Control::new(None, false),
@@ -4786,7 +4782,7 @@ mod tests {
 	/// which is what these advertisements would be had they arrived on two sessions. The
 	/// refcount is a detail of sharing one `SourceGuard` per session; it must not change
 	/// what the origin sees.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn the_last_owner_out_decides_the_detach() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4846,7 +4842,7 @@ mod tests {
 	/// An update replaces the advertisement in place: the route moves, the refcount does
 	/// not, and the source is not torn down. Only a changed original publisher replaces
 	/// it, since that content is not interchangeable.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn cluster_update_replaces_in_place() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4885,7 +4881,7 @@ mod tests {
 	/// relay signals that it started carrying the namespace), so the source and every
 	/// live subscription on it must survive. Reading the repeat as a new publisher
 	/// detached the source milliseconds after SUBSCRIBE went out.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn anonymous_publisher_survives_a_repricing_update() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4934,7 +4930,7 @@ mod tests {
 
 	/// Two *separate* advertisements for one namespace refcount a single route:
 	/// it takes both retractions to retract it.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn separate_adverts_refcount_the_route() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4968,7 +4964,7 @@ mod tests {
 	/// one namespace are then two messages about a single source, and treating the
 	/// second as a different publisher would tear down what the first attached, right
 	/// as a subscriber is resolving a track through it.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn pathless_adverts_never_replace_the_source() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -4995,7 +4991,7 @@ mod tests {
 	/// An update replaces the advertisement it repeats. When the replacement loops back
 	/// through us it is a retraction, so the route we were holding must go: keeping it
 	/// would leave subscriptions on a path the peer no longer offers.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn reflected_replacement_retracts_the_route() {
 		let self_origin = crate::Hop::new(5).unwrap();
 		let (mut subscriber, origin) = cluster_subscriber(self_origin);
@@ -5078,7 +5074,7 @@ mod tests {
 		std::mem::forget(task_set);
 
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session.clone(),
 			origin,
 			Control::new(None, false),
@@ -5164,7 +5160,7 @@ mod tests {
 	/// namespace even when the peer's path goes clean again. It is also not ours to
 	/// close: a peer MAY legitimately send a path carrying our Hop ID when a redundant
 	/// sibling shares it, which the draft answers with "discard", not PROTOCOL_VIOLATION.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_reflected_update_detaches_but_keeps_the_stream() {
 		let self_origin = crate::Hop::new(5).unwrap();
 		let peer = peer_9();
@@ -5210,7 +5206,7 @@ mod tests {
 
 	/// Having kept the stream, a later usable path re-attaches on it. This is the whole
 	/// reason the stream stays open.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_clean_update_after_a_reflection_reattaches() {
 		let self_origin = crate::Hop::new(5).unwrap();
 		let peer = peer_9();
@@ -5250,7 +5246,7 @@ mod tests {
 	/// The expected update: a relay that started carrying the namespace reprices it to
 	/// 0. REQUEST_UPDATE keeps an omitted parameter, so the 0 arrives explicit and alone,
 	/// lands on the path already held, and is answered REQUEST_OK.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_explicit_zero_reprices_the_held_path() {
 		const VERSION: Version = Version::Draft19;
 		let self_origin = crate::Hop::new(5).unwrap();
@@ -5315,7 +5311,7 @@ mod tests {
 	/// closed, which withdraws the advertisement (moq-transport Section 9.5.1). The
 	/// caller releases the route, so the loop must return cleanly rather than fault the
 	/// session.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_failed_update_withdraws_the_advertisement() {
 		let self_origin = crate::Hop::new(5).unwrap();
 		let peer = peer_9();
@@ -5366,7 +5362,7 @@ mod tests {
 	/// is not continuous with what is held. The draft has the sender withdraw and
 	/// advertise again instead, so the update is refused and the stream closed, which
 	/// is that withdrawal.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_update_that_changes_the_publisher_is_refused() {
 		let self_origin = crate::Hop::new(5).unwrap();
 		let peer = peer_9();
@@ -5411,7 +5407,7 @@ mod tests {
 
 	/// A second PUBLISH_NAMESPACE on the stream that already carries one is not an
 	/// update any more: it is the base draft's duplicate request, a protocol violation.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_repeated_publish_namespace_is_a_duplicate() {
 		const VERSION: Version = Version::Draft19;
 		let self_origin = crate::Hop::new(5).unwrap();
@@ -5467,7 +5463,7 @@ mod tests {
 	/// without a NAMESPACE_DONE for each, those refcounts must still be released, or the
 	/// source stays attached for the rest of the session (the stream can die while the
 	/// session keeps running).
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn namespace_stream_close_releases_live_paths() {
 		let (mut subscriber, origin) = cluster_subscriber(crate::Hop::new(1).unwrap());
 		let consumer = origin.consume();
@@ -5498,7 +5494,7 @@ mod tests {
 	///
 	/// Draft-14 answers with PUBLISH_ERROR and its own registry; draft-15 folded the message
 	/// into REQUEST_ERROR, so both shapes have to carry NOT_SUPPORTED.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn publish_is_rejected_without_announcing() {
 		for version in [Version::Draft14, Version::Draft19] {
 			// An open gate, so the rejection actually reaches the wire.
@@ -5510,7 +5506,7 @@ mod tests {
 			std::mem::forget(task_set);
 
 			let mut subscriber = Subscriber::new(
-				crate::time::Clock::tokio(),
+				crate::time::Clock::sim(),
 				session.clone(),
 				origin,
 				Control::new(None, false),
@@ -5536,7 +5532,7 @@ mod tests {
 
 			// Errors are surfaced to the peer on the stream, not raised as a session error.
 			subscriber.run_publish_stream(stream, msg).await.unwrap();
-			tokio::time::sleep(Duration::from_millis(1)).await;
+			moq_net_sim::sleep(Duration::from_millis(1)).await;
 
 			assert!(
 				routed_now(&consumer, "room/host").is_none(),
@@ -6037,7 +6033,7 @@ mod stitch_tests {
 			let tasks = TaskSet::new();
 
 			let subscriber = Subscriber::new(
-				crate::time::Clock::tokio(),
+				crate::time::Clock::sim(),
 				session.clone(),
 				origin,
 				Control::new(None, false),
@@ -6126,7 +6122,7 @@ mod stitch_tests {
 	/// The tail is read first, so it has to wait for the head rather than start a group of
 	/// its own: with newest-first group order the publisher can prioritize the tail's stream
 	/// ahead of the fill's.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_fill_and_its_tail_stitch_into_one_group() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6171,7 +6167,7 @@ mod stitch_tests {
 	}
 
 	/// END_OF_TRACK after a group's last object ends the track right after that group.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_end_of_track_after_a_group_ends_the_track_after_it() {
 		let h = Harness::new(Fill::Done, vec![end_of_track(tail_stream(SEQUENCE, 0, &[b"last"]))]);
 		let mut consumer = h.track.subscribe(None);
@@ -6188,7 +6184,7 @@ mod stitch_tests {
 
 	/// END_OF_TRACK at object 0 says the group does not exist, so the track ends before it
 	/// and no group is created for it.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_end_of_track_at_object_zero_creates_no_group() {
 		let h = Harness::new(Fill::Done, vec![end_of_track(tail_stream(SEQUENCE, 0, &[]))]);
 		let mut stream = h.stream().await;
@@ -6200,7 +6196,7 @@ mod stitch_tests {
 
 	/// The group ended exactly where we joined it, so the subscription's stream carries no
 	/// objects at all. That still ends the group, which is what publishes the head.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_empty_tail_finishes_the_filled_group() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6225,7 +6221,7 @@ mod stitch_tests {
 	/// The subscription can end while the fetch stream is still writing, and that teardown
 	/// cannot reach a producer the fetch stream still owns. The handoff has to settle it, or
 	/// the head outlives the subscription unfinished and a consumer blocks on it.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_head_finishing_after_teardown_is_published_not_installed() {
 		let track = track::Producer::new(
 			std::sync::Arc::new(crate::broadcast::Info::default()),
@@ -6254,7 +6250,7 @@ mod stitch_tests {
 	/// A publisher that serves a head and then opens a whole group for the same sequence
 	/// has contradicted its own fill. The model holds one producer per group, so the
 	/// duplicate stream goes and the head is published as the prefix it is.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_whole_group_for_a_headed_sequence_is_refused() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6282,7 +6278,7 @@ mod stitch_tests {
 	/// A fill head parked waiting for its tail is still a live group producer. Dropping the
 	/// session has to end it, or the consumer waits on a group nobody will ever write again.
 	/// The guard is `State`'s own `Drop`, so it runs however the driver was torn down.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_cancelled_session_aborts_a_waiting_fill_head() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6312,7 +6308,7 @@ mod stitch_tests {
 	/// group lands before the fill has written its head. The model holds one producer per
 	/// live sequence, so the fill loses the race to create it and gives up, rather than a
 	/// second producer appearing and the objects being delivered twice.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_whole_group_that_precedes_the_head_wins_the_sequence() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6344,7 +6340,7 @@ mod stitch_tests {
 	/// Without a head there is nothing to stitch onto, so a stream that starts part way
 	/// through a group is dropped and the join degrades to the next group boundary. This is
 	/// what a strict publisher gives a subscriber that asks for no fill.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_tail_without_a_fill_is_dropped() {
 		let h = Harness::new(Fill::Done, vec![tail_stream(SEQUENCE, 2, &[b"tail-2"])]);
 		let mut consumer = h.track.subscribe(None);
@@ -6357,7 +6353,7 @@ mod stitch_tests {
 		));
 
 		// Nothing usable reaches the model: the group is never offered at all.
-		let delivered = tokio::time::timeout(Duration::from_millis(50), async {
+		let delivered = moq_net_sim::timeout(Duration::from_millis(50), async {
 			let mut group = consumer.recv_group().await.ok().flatten()?;
 			group.read_frame().await.ok().flatten()
 		})
@@ -6368,7 +6364,7 @@ mod stitch_tests {
 	/// A head that stops short of where the tail starts would leave a hole in the middle of
 	/// the group, which the model cannot express. Both halves go, and the head is published
 	/// as the prefix it is.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_head_that_misses_the_tail_is_refused() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6394,7 +6390,7 @@ mod stitch_tests {
 
 	/// A fetch stream can arrive before SUBSCRIBE_OK commits the pending track. It waits
 	/// for that response instead of looking up a producer that does not exist yet.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_early_fill_waits_for_subscribe_ok() {
 		let h = Harness::new(Fill::Requested, vec![fill_stream(SEQUENCE, &[b"head-0"])]);
 		{
@@ -6416,7 +6412,7 @@ mod stitch_tests {
 
 	/// A fetch stream answering a subscription that asked for no fill duplicates a group the
 	/// subscription itself is delivering, so it is refused rather than written.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_unsolicited_fill_is_refused() {
 		let h = Harness::new(Fill::Done, vec![fill_stream(SEQUENCE, &[b"head-0"])]);
 		let mut fill = h.stream().await;
@@ -6435,7 +6431,7 @@ mod stitch_tests {
 
 	/// A mid-group subscribe stream waits for the joining FETCH's head and stitches onto it,
 	/// the same rendezvous a draft-20 fill uses. The FETCH is named by its own request id.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_joining_fetch_stitches_a_mid_group_tail() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6466,7 +6462,7 @@ mod stitch_tests {
 
 	/// A subscribe stream that starts at object 0 stands alone; the joining FETCH's answer
 	/// is discarded rather than delivered twice.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_whole_group_stream_discards_the_joining_fetch() {
 		let h = Harness::new(
 			Fill::Serving(Some(Timescale::MICRO)),
@@ -6518,7 +6514,7 @@ mod stitch_tests {
 	/// An absolute joining FETCH writes complete groups below Largest Location, then the
 	/// live group's head; the subscribe stream continues that last group with no gap.
 	/// Consecutive groups encode as ascending delta 0 from draft-18 on.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn an_absolute_fetch_stitches_into_the_live_tail() {
 		const START: u64 = 7;
 		const LIVE_GROUP: u64 = 10;
@@ -6572,7 +6568,7 @@ mod stitch_tests {
 
 	/// A fetch stream that ends before the live group delivers what arrived. The first
 	/// delivered group is the start, and the live tail that cannot stitch is a discontinuity.
-	#[tokio::test]
+	#[moq_net_sim::test]
 	async fn a_short_fetch_delivers_its_prefix() {
 		const START: u64 = 7;
 		let largest = ietf::Location { group: 10, object: 1 };
@@ -6624,7 +6620,7 @@ mod joining_fetch_tests {
 	];
 
 	async fn settle() {
-		tokio::time::sleep(Duration::from_millis(1)).await;
+		moq_net_sim::sleep(Duration::from_millis(1)).await;
 	}
 
 	fn message_bytes<M: Message>(id: u64, msg: &M, version: Version) -> Vec<u8> {
@@ -6730,7 +6726,7 @@ mod joining_fetch_tests {
 			kio::Pending<track::Subscribing>,
 		),
 		_tasks: (Tasks, TaskSet),
-		serving: tokio::task::JoinHandle<()>,
+		serving: moq_net_sim::JoinHandle<()>,
 	}
 
 	impl JoinRun {
@@ -6738,7 +6734,7 @@ mod joining_fetch_tests {
 			let session = ScriptedSession::per_stream(vec![ok, fetch]);
 			let (tasks, _task_set) = crate::util::TaskSet::new();
 			let subscriber = Subscriber::new(
-				crate::time::Clock::tokio(),
+				crate::time::Clock::sim(),
 				session.clone(),
 				crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 				Control::new(None, false),
@@ -6762,7 +6758,7 @@ mod joining_fetch_tests {
 			let request = dynamic.requested_track().await.expect("no track requested");
 
 			let mut serving_subscriber = subscriber.clone();
-			let serving = tokio::spawn(async move {
+			let serving = moq_net_sim::spawn(async move {
 				serving_subscriber
 					.run_subscribe(Path::new("broadcast"), dynamic, request)
 					.await;
@@ -6798,7 +6794,7 @@ mod joining_fetch_tests {
 
 	/// Every pre-draft-20 live join is Largest Object on the SUBSCRIBE and a relative
 	/// joining FETCH at offset 0 that names the subscribe's request id.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_live_join_is_spelled_as_largest_object_plus_relative_fetch() {
 		let largest = Some(ietf::Location { group: 4, object: 1 });
 		for version in JOINING_DRAFTS {
@@ -6830,7 +6826,7 @@ mod joining_fetch_tests {
 
 	/// An explicit group-aligned unbounded start is the same Largest Object SUBSCRIBE plus
 	/// an absolute joining FETCH at that group.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn an_absolute_join_is_spelled_at_the_start_group() {
 		let largest = Some(ietf::Location { group: 9, object: 0 });
 		for version in JOINING_DRAFTS {
@@ -6859,7 +6855,7 @@ mod joining_fetch_tests {
 
 	/// The peer refusing the FETCH continues the subscription live: the fill is settled so
 	/// a later whole group is not left waiting on a head that is never coming.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_refused_fetch_continues_live() {
 		let largest = Some(ietf::Location { group: 4, object: 1 });
 		for version in JOINING_DRAFTS {
@@ -6876,14 +6872,14 @@ mod joining_fetch_tests {
 	}
 
 	/// A frame-level start is refused before SUBSCRIBE is written, rather than rounded down.
-	#[tokio::test(start_paused = true)]
+	#[moq_net_sim::test]
 	async fn a_frame_level_start_never_reaches_the_wire() {
 		let version = Version::Draft19;
 		let session = ScriptedSession::new(Vec::new());
 		let log = session.log.clone();
 		let (tasks, _task_set) = crate::util::TaskSet::new();
 		let mut subscriber = Subscriber::new(
-			crate::time::Clock::tokio(),
+			crate::time::Clock::sim(),
 			session,
 			crate::origin::Config::new(crate::Hop::new(1).unwrap()).produce(),
 			Control::new(None, false),
