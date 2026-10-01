@@ -33,7 +33,6 @@ Public API: none. Wire: none.
 - [moq-cli tests on a paused clock](/quest/m1/test-flakes-2/cli-paused-clock.md) - the fetch timeout and completion tests stop racing wall-clock budgets
 - [Subscription cut by disconnect](/quest/m1/test-flakes-2/subscription-cut.md) - a publisher disconnect never ends a subscription clean
 - [Media late join](/quest/m1/test-flakes-2/media-late-join.md) - `just test media` late join stays within one GOP, or the regression is fixed
-- [Shaper virtual time](/quest/m1/test-flakes-2/shaper-virtual-time.md) - `moq-shaper` tests judge seeded decisions on paused time, not on wall-clock delivery under load
 - [Scoped WARN capture](/quest/m1/test-flakes-2/warn-capture.md) - the drop-unfinished tests count only their own WARNs
 - [moq-mux debounce clock](/quest/m1/test-flakes-2/mux-debounce-clock.md) - the TS export debounce test advances on the paused clock
 - [js/publish audio clock](/quest/m1/test-flakes-2/publish-audio-clock.md) - the audio encoder delay test runs on mock time
