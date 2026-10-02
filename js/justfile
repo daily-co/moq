@@ -48,6 +48,11 @@ bench name:
     bun install --frozen-lockfile
     bun net/bench/{{ name }}.ts
 
+# Sweep catalog estimate publishes and subscribe updates over tracks x viewers.
+catalog-bench:
+    bun install --frozen-lockfile
+    bun publish/bench/catalog.ts
+
 # Build all packages.
 build:
     bun run --filter='*' build

@@ -122,6 +122,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: nix develop --command just js bench track
 
+      - name: JS catalog estimate fanout benchmark
+        if: ${{ !cancelled() }}
+        run: nix develop --command just js catalog-bench
+
       # Runs each moq-net Criterion routine once, so a bench that panics (an
       # unparsable version, a shape that deadlocks) fails here instead of on the
       # next manual run. Timing is not compared; nextest never runs a
