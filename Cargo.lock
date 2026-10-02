@@ -4345,7 +4345,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
- "uuid",
  "web-transport-trait",
  "zeroize",
 ]
@@ -4521,6 +4520,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
  "wasm-bindgen-test",
  "web-async",
  "web-transport-trait",
