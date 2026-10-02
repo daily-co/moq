@@ -29,6 +29,8 @@ clusters.
   establishing the boundary link. A missing, mismatched, or unconfigured
   boundary identity is fatal. Both link directions must be classified
   explicitly; do not trust an arbitrary domain supplied in an announcement.
+  Bind the expected domain to the authenticated link on accepted and dialed
+  sessions: the existing `peer` grant alone does not identify a domain.
   Carry the identity declaration in the current unpublished lite version's
   boundary handshake, with no change to published versions. Refuse boundary
   operation when that version is not negotiated. This is validation of the
@@ -54,7 +56,8 @@ and an origin that is not a boundary relay, and three clusters in a cycle with d
 
 Also test malformed and missing configuration, mismatched peer identities,
 unauthenticated boundary requests, version refusal, and an ordinary
-intra-cluster peer that retains its existing behavior. Sweep the routing
+intra-cluster peer that retains its existing behavior. Include an authenticated
+peer claiming the wrong domain. Sweep the routing
 benchmark over clusters and boundary links, including a path-vector cycle,
 so forwarding cost is measured against the touched path rather than the
 whole route table.
