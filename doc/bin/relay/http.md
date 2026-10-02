@@ -59,6 +59,27 @@ and friends. During a [shutdown drain](/bin/relay/config#shutdown),
 `moq_relay_draining_sessions` counts the sessions sent a GOAWAY that have not
 left yet. Host CPU and memory belong to a node exporter.
 
+`moq_relay_sessions_refused_total` counts the sessions admission turned away, by
+`reason`:
+
+- `refused`: the decider said no (the auth server, the public rules, or an
+  embedder).
+- `unavailable`: the decider could not answer, so the client is told to retry
+  (the auth server was unreachable or answered with neither a grant nor a
+  refusal, a decider sent a grant the relay cannot use, or an embedder did not
+  answer).
+- `request`: an embedder refused the request as one it cannot decide.
+- `forbidden`: the grant allows nothing the session asked for, or an embedder
+  refused the session as forbidden.
+- `lan`: a LAN peer's membership proof was missing or wrong, or LAN discovery
+  is off.
+
+Only sessions are counted. The HTTP routes admit through the same decider but
+open no session, so like `moq_relay_sessions_opened_total` this leaves them out,
+and a refusal earlier in the handshake, such as TLS, never reaches admission. A
+rise in `unavailable` points at the auth server; a rise in `refused` at the
+credentials clients present.
+
 Traffic and session counters accumulate for the node's lifetime, including
 broadcasts and sessions that have ended. The stats publishing prefix (normally
 `.stats`) is excluded to avoid counting the feed's own traffic.
