@@ -62,12 +62,14 @@ pub struct Client {
 	pub(crate) reconnect: bool,
 	pub(crate) backoff: Backoff,
 	pub(crate) goaway: Goaway,
-	/// The resolved Happy Eyeballs timings, used by the `tcp://` dial here; the
+	/// The resolved Happy Eyeballs timings, used by TCP dials here; the
 	/// QUIC backend captures its own copy from the config.
 	#[cfg(feature = "tcp")]
 	failover_delay: std::time::Duration,
 	#[cfg(feature = "tcp")]
 	resolution_delay: std::time::Duration,
+	#[cfg(feature = "tcp")]
+	tcp_tls: crate::tls::Connect,
 	#[cfg(feature = "websocket")]
 	websocket: crate::websocket::Config,
 	/// The TLS server name override used by the WebSocket fallback.
@@ -141,6 +143,8 @@ impl Client {
 				feature = "uds"
 			))]
 			versions,
+			#[cfg(feature = "tcp")]
+			tcp_tls: config.tls.clone(),
 			connect: config.url,
 			timeout,
 			reconnect: !config.once.unwrap_or(false),
@@ -384,6 +388,19 @@ impl Client {
 			return Ok(connect_session(&moq, crate::transport::Session::new(session)).await?);
 		}
 
+		#[cfg(feature = "tcp")]
+		if url.scheme() == "tls" {
+			let session = crate::tcp::connect_tls(
+				url,
+				&self.versions.alpns(),
+				&self.tcp_tls,
+				self.failover_delay,
+				self.resolution_delay,
+			)
+			.await?;
+			return Ok(connect_session(&moq, crate::transport::Session::new(session)).await?);
+		}
+
 		// Unix domain socket (qmux, no TLS). Same-host only; the server can
 		// authenticate us by uid/gid via SO_PEERCRED.
 		#[cfg(all(feature = "uds", unix))]
@@ -547,7 +564,7 @@ fn setup_path(url: &Url) -> Option<String> {
 			.filter(|path| !path.is_empty()),
 		// Raw QUIC and qmux over TCP negotiate an ALPN and nothing else, so the whole
 		// request target travels in the SETUP.
-		"moqt" | "moql" | "tcp" => request_target(url),
+		"moqt" | "moql" | "tcp" | "tls" => request_target(url),
 		_ => None,
 	}
 }
@@ -785,6 +802,8 @@ mod tests {
 			("tcp://localhost:4443/room", Some("/room")),
 			("tcp://localhost:4443/room?jwt=abc", Some("/room?jwt=abc")),
 			("tcp://localhost:4443", None),
+			("tls://localhost:4443/room?jwt=abc", Some("/room?jwt=abc")),
+			("tls://localhost:4443", None),
 			// Raw QUIC: the URL is ours alone, so the path and query have to ride the
 			// SETUP or the server never sees them.
 			("moqt://relay.example.com/anon", Some("/anon")),

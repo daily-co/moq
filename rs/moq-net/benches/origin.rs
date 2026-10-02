@@ -477,9 +477,48 @@ fn bench_handoff(c: &mut Criterion) {
 	group.finish();
 }
 
+/// An edge's core-facing announce cursors export local ingress and exclude
+/// core ingress. Sweep route count and core-facing cursors independently.
+fn bench_edge_split_horizon(c: &mut Criterion) {
+	let mut group = c.benchmark_group("origin/edge_split_horizon");
+	for (publishers, cores) in [(100, 2), (1_000, 2), (1_000, 20)] {
+		for peer in [false, true] {
+			let label = if peer { "core_ingress" } else { "local_ingress" };
+			let id = BenchmarkId::new(label, format!("{publishers}p_{cores}c"));
+			group.bench_function(id, |b| {
+				let (producer, _driver) = origin::Producer::new(origin::Config::default());
+				let ingress = if peer {
+					producer.clone().peer()
+				} else {
+					producer.clone()
+				};
+				let _routes: Vec<_> = (0..publishers)
+					.map(|i| ingress.publish(format!("room/{i}"), origin::Route::default()).unwrap())
+					.collect();
+				let mut cursors: Vec<_> = (0..cores).map(|_| producer.consume().local().announced()).collect();
+				for cursor in &mut cursors {
+					while cursor.next().now_or_never().flatten().is_some() {}
+				}
+				b.iter(|| {
+					let broadcast = ingress.publish("room/incoming", origin::Route::default()).unwrap();
+					for cursor in &mut cursors {
+						assert_eq!(cursor.next().now_or_never().flatten().is_some(), !peer);
+					}
+					drop(broadcast);
+					for cursor in &mut cursors {
+						assert_eq!(cursor.next().now_or_never().flatten().is_some(), !peer);
+					}
+				});
+			});
+		}
+	}
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_announce,
+	bench_edge_split_horizon,
 	bench_announce_mounted,
 	bench_announce_fleet,
 	bench_announce_duplicate,

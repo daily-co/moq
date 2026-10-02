@@ -209,6 +209,7 @@ pub(crate) fn authorize(
 	cluster_peer: bool,
 	transport: &dyn std::fmt::Display,
 ) -> anyhow::Result<Grants> {
+	cluster.authorize_peer(token.peer)?;
 	let publish = cluster.publisher(token);
 	let subscribe = cluster.subscriber(token);
 

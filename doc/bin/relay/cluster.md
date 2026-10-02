@@ -48,6 +48,57 @@ hop from the relay it connects to, fresh for each connection, followed by a 0.
 Its reconnect is therefore a new publisher downstream, a reprice on the same
 connection stays in place, and the 0 keeps it ranked as anonymous.
 
+## Edge and core roles
+
+Set `cluster.role = "edge"` for relays that serve end users, or `"core"`
+for the backbone. Leave it unset during migration to preserve the legacy mesh.
+A core accepts only sessions whose auth grant sets `peer = true`, including
+HTTP fetches and announcements. A verified certificate alone is not membership.
+Edges refuse inbound peer sessions; they dial their region's cores themselves.
+
+An edge's peer entries must declare `role = "core"` and use `tls://`.
+An edge advertises only routes ingested locally, so a route received from one
+core cannot reach another core through that edge. Cores may dial explicit cores
+and legacy peers, but refuse peers declared as edges. A role-aware relay refuses
+LAN discovery because its advertisements do not declare peer roles.
+
+```toml
+[cluster]
+role = "edge"
+connect = [
+  { url = "tls://core-a.example:4444/", role = "core", token = "CLUSTER_JWT" },
+  { url = "tls://core-b.example:4444/", role = "core", token = "CLUSTER_JWT" },
+]
+```
+
+On each core, enable encrypted qmux on its TCP listener:
+
+```toml
+[listen.tcp]
+bind = "0.0.0.0:4444"
+tls = true
+
+[listen.tls]
+cert = "core.pem"
+key = "core.key"
+
+[cluster]
+role = "core"
+```
+
+The `tls://` scheme requires an explicit port and uses `connect.tls` trust,
+certificate, and hostname settings. It speaks qmux directly over TLS on TCP.
+Its listener reports the TCP transport to the auth server, as both secure and
+plaintext WebSocket listeners report WebSocket. Use peer grants authenticated
+with cluster credentials. The TLS TCP listener refuses `listen.tls.root` because
+qmux's TLS accept API does not expose the verified client certificate to the
+relay's auth request. Use a separate QUIC listener for mTLS-authenticated peers.
+
+Generate peer lists so each edge dials all of its region's cores, cores do not
+link within a region, and inter-region cores dial only peers with lower names.
+The relay validates role compatibility and follows the configured links; it
+has no region inventory to generate those lists itself.
+
 ## Topology
 
 List the peers each relay dials. That's the whole topology: a relay dials only

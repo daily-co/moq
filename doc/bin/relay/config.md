@@ -27,8 +27,9 @@ key = "key.pem"
 generate = ["localhost"]             # Or: a self-signed cert for development.
 root = ["peer-ca.pem"]               # Optional: CAs for client certs (mTLS), reported to the auth server.
 
-[listen.tcp]                         # Plaintext qmux over TCP for trusted local workers.
+[listen.tcp]                         # Qmux over TCP. Plaintext by default.
 bind = "127.0.0.1:4444"
+# tls = true                        # tls:// on this port, using listen.tls certificates.
 
 [listen.unix]                        # Plaintext qmux over a Unix socket, gated by peer credentials.
 bind = "/run/moq/internal.sock"
@@ -139,7 +140,8 @@ See [Authentication](/bin/relay/auth).
 
 ```toml
 [cluster]
-connect = ["https://us-east.example.com/?cost=10"]   # Peers to dial. ?cost prices the link, or use {url, cost, egress, token} objects.
+# role = "edge"                                    # Or "core"; unset keeps legacy mesh behavior.
+connect = ["https://us-east.example.com/?cost=10"]   # Peers to dial. ?cost prices the link, or use {url, role, cost, egress, token} objects.
 node = "https://us-west.example.com/"                 # This relay's own URL.
 connect_api = "https://api.example.com/peers"        # Or fetch the peer list (JSON array of URLs and/or objects) live.
 token = "cluster.jwt"                                 # JWT for dials without an inline ?jwt=.

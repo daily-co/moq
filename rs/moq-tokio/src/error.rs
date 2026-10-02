@@ -133,8 +133,8 @@ pub enum Error {
 	#[error("Iroh support is not enabled")]
 	IrohDisabled,
 
-	/// A client certificate was configured, but this QUIC backend can't do mTLS.
-	#[error("tls.root (mTLS) is not supported by the selected QUIC backend")]
+	/// Client certificate roots were configured, but this transport cannot expose the peer identity.
+	#[error("tls.root (mTLS) is not supported by the selected transport")]
 	MtlsUnsupported,
 
 	/// A worker group was asked for more members than the connection ID's one-byte

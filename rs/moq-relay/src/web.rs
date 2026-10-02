@@ -870,7 +870,12 @@ async fn admit_http(
 	request.server_name = request_host(uri, headers);
 	request.remote = Some(remote.0);
 	request.tls = mtls.and_then(|Extension(MtlsPeer(identity))| auth::peer(&identity));
-	state.auth.admit(request).await
+	let lease = state.auth.admit(request).await?;
+	state
+		.cluster
+		.authorize_peer(lease.token().peer)
+		.map_err(|_| auth::Error::Refused)?;
+	Ok(lease)
 }
 
 /// Serve the announced broadcasts for a given prefix.

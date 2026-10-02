@@ -1,12 +1,9 @@
-//! Plain-TCP qmux transport, reachable via the `tcp://` URL scheme.
+//! Qmux over TCP, with `tcp://` for plaintext and `tls://` for TLS.
 //!
-//! Runs the QMux wire format directly over TCP with no TLS or WebSocket
-//! framing. There is no transport encryption and no authentication, so only
-//! use this on a trusted network (loopback, a private VPC interface, etc.).
-//!
-//! TCP has no TLS handshake, so the application protocol (the moq ALPN) is
-//! negotiated in-band: pass the offered/supported protocols and the resulting
-//! `qmux::Session::protocol()` is populated before connect/accept returns.
+//! Both schemes speak qmux directly without WebSocket framing. Plaintext
+//! `tcp://` is for trusted networks only; `tls://` authenticates and encrypts
+//! with the same trust and certificate settings as the other TLS transports.
+//! Plaintext negotiates the MoQ ALPN in-band; TLS negotiates it in its handshake.
 
 use std::net;
 use url::Url;
@@ -15,11 +12,11 @@ use url::Url;
 /// negotiated) since there's no TLS ALPN to carry it.
 const WIRE_VERSION: qmux::Version = qmux::Version::QMux01;
 
-/// Plaintext-TCP qmux listener settings (no TLS, no UDP).
+/// Qmux TCP listener settings, with optional TLS and no UDP.
 ///
-/// Flattened onto [`crate::listen::Config::tcp`]. TCP carries no peer identity, so
-/// the listener must only be reachable from trusted clients. Bind it to loopback
-/// or a private interface; a non-loopback bind logs a warning but is allowed.
+/// Flattened onto [`crate::listen::Config::tcp`]. Plaintext connections need a
+/// trusted network; a non-loopback plaintext bind logs a warning. Enable `tls`
+/// to encrypt this port using the listen TLS certificate.
 // The derived arg group is named after the struct, so it needs an explicit id to
 // stay unique across the flattened sections.
 #[derive(usage::Args, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -27,7 +24,7 @@ const WIRE_VERSION: qmux::Version = qmux::Version::QMux01;
 #[serde(deny_unknown_fields, default)]
 #[non_exhaustive]
 pub struct Config {
-	/// Bind a plaintext qmux TCP listener on this address.
+	/// Bind a qmux TCP listener on this address.
 	#[usage(
 		long = "listen-tcp-bind",
 		name = "listen-tcp-bind",
@@ -36,6 +33,11 @@ pub struct Config {
 	)]
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub bind: Option<net::SocketAddr>,
+
+	/// Encrypt this TCP listener with the configured listen TLS certificate.
+	#[usage(long = "listen-tcp-tls", env = "MOQ_LISTEN_TCP_TLS", setting = "listen.tcp.tls", default_missing = "true", num_args = 0..=1, require_equals = true)]
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tls: Option<bool>,
 
 	/// The released `--server-tcp-bind` spelling and its env var, folded in by
 	/// [`Config::resolved`].
@@ -76,7 +78,7 @@ impl Config {
 	}
 }
 
-/// Errors specific to the plain-TCP qmux transport.
+/// Errors specific to the qmux TCP transport.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -86,11 +88,11 @@ pub enum Error {
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
 
-	/// The `tcp://` URL had no host.
+	/// The qmux TCP URL had no host.
 	#[error("missing hostname")]
 	MissingHostname,
 
-	/// The `tcp://` URL had no port. Unlike `https`, there is no default.
+	/// The qmux TCP URL had no port. Unlike `https`, there is no default.
 	#[error("missing port")]
 	MissingPort,
 
@@ -152,6 +154,43 @@ pub(crate) async fn connect(
 	connect_addrs(candidates, protocols, failover_delay).await
 }
 
+/// Dial encrypted qmux over TCP, racing resolved addresses through the TLS handshake.
+pub(crate) async fn connect_tls(
+	url: Url,
+	protocols: &[&str],
+	config: &crate::tls::Connect,
+	failover_delay: std::time::Duration,
+	resolution_delay: std::time::Duration,
+) -> crate::Result<qmux::Session> {
+	#[cfg(not(any(feature = "aws-lc-rs", feature = "ring")))]
+	if rustls::crypto::CryptoProvider::get_default().is_none() {
+		return Err(crate::Error::NoBackend("tls:// requires a crypto provider"));
+	}
+
+	let host = url.host().ok_or(Error::MissingHostname)?;
+	let port = url.port().ok_or(Error::MissingPort)?;
+	let name = config.host_name.clone().unwrap_or_else(|| match host {
+		url::Host::Domain(name) => name.to_owned(),
+		url::Host::Ipv4(ip) => ip.to_string(),
+		url::Host::Ipv6(ip) => ip.to_string(),
+	});
+	let client = qmux::tls::Client::new(std::sync::Arc::new(config.build()?))
+		.with_protocols(protocols.iter().map(|&alpn| (alpn, &[WIRE_VERSION][..])))
+		.require_protocol();
+	let candidates = crate::resolve::Candidates::resolve(host, port, resolution_delay);
+	Ok(crate::failover::race(candidates, failover_delay, |addr| {
+		let client = client.clone();
+		let name = name.clone();
+		async move {
+			client
+				.connect(addr, &name)
+				.await
+				.map_err(|err| Error::Connect(crate::error::message(err)))
+		}
+	})
+	.await?)
+}
+
 /// Dial `candidates` in Happy Eyeballs order, performing the qmux handshake on
 /// each attempt; the first session to complete wins.
 async fn connect_addrs(
@@ -172,11 +211,12 @@ async fn connect_addrs(
 	.await
 }
 
-/// Listens for incoming plain-TCP qmux connections on a TCP port.
+/// Listen for qmux connections on a TCP port.
 pub struct Listener {
 	listener: tokio::net::TcpListener,
 	protocols: Vec<String>,
 	health: crate::accept::Health,
+	tls: Option<qmux::tls::Server>,
 }
 
 impl Listener {
@@ -187,7 +227,13 @@ impl Listener {
 			listener,
 			protocols: Vec::new(),
 			health: crate::accept::Health::new("tcp"),
+			tls: None,
 		})
+	}
+
+	pub(crate) fn with_tls(mut self, tls: Option<std::sync::Arc<rustls::ServerConfig>>) -> Self {
+		self.tls = tls.map(qmux::tls::Server::new);
+		self
 	}
 
 	/// A live handle to this listener's accept-loop health, for an embedder that
@@ -243,11 +289,13 @@ impl Listener {
 		let (stream, addr) = self.accept_socket().await;
 		tracing::debug!(%addr, "accepted TCP connection");
 		let config = qmux::tcp::Config::new(WIRE_VERSION).protocols(self.protocols.iter().map(String::as_str));
+		let tls = self.tls.clone();
 		async move {
-			let session = config
-				.accept(stream)
-				.await
-				.map_err(|err| Error::Accept(crate::error::message(err)))?;
+			let session = match tls {
+				Some(tls) => tls.accept(stream).await,
+				None => config.accept(stream).await,
+			}
+			.map_err(|err| Error::Accept(crate::error::message(err)))?;
 			Ok((session, addr))
 		}
 	}
@@ -275,6 +323,71 @@ mod tests {
 	use super::*;
 	use std::time::Duration;
 	use web_transport_trait::Session as _;
+
+	#[test]
+	fn tls_listener_refuses_missing_bind_and_mtls_roots() {
+		let mut listen = crate::listen::Config::default();
+		listen.tcp.tls = Some(true);
+		assert!(matches!(
+			listen.clone().init(Default::default()),
+			Err(crate::Error::NoBackend(_))
+		));
+		listen.tcp.bind = Some("127.0.0.1:0".parse().unwrap());
+		listen.tls.root = vec!["client-ca.pem".into()];
+		assert!(matches!(
+			listen.init(Default::default()),
+			Err(crate::Error::MtlsUnsupported)
+		));
+	}
+
+	#[cfg(feature = "_certs")]
+	#[tokio::test]
+	async fn tls_negotiates_qmux_and_refuses_untrusted_certificates() {
+		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+		let mut listen = crate::listen::Config::default();
+		listen.tcp.bind = Some("127.0.0.1:0".parse().unwrap());
+		listen.tcp.tls = Some(true);
+		listen.tls.generate = vec!["localhost".into()];
+		let mut server = listen.init(Default::default()).unwrap().listen().await.unwrap();
+		let addr = server.tcp_local_addr().unwrap();
+		let url: Url = format!("tls://localhost:{}/room?jwt=credential", addr.port())
+			.parse()
+			.unwrap();
+		let accept = tokio::spawn(async move {
+			let request = server.accept().await.unwrap();
+			assert_eq!(request.transport(), crate::server::Transport::Tcp);
+			assert_eq!(request.path(), "/room");
+			assert_eq!(request.query(), Some("jwt=credential"));
+			let session = request.ok().await.unwrap();
+			(server, session)
+		});
+		let untrusted = crate::connect::Config {
+			once: Some(true),
+			..Default::default()
+		};
+		assert!(
+			untrusted
+				.init(Default::default())
+				.unwrap()
+				.with_reconnect(false)
+				.connect(url.clone())
+				.established()
+				.await
+				.is_err()
+		);
+		let mut trusted = crate::connect::Config {
+			once: Some(true),
+			..Default::default()
+		};
+		trusted.tls.insecure = Some(true);
+		let connection = trusted
+			.init(Default::default())
+			.unwrap()
+			.with_reconnect(false)
+			.connect(url);
+		let _connection = connection.established().await.unwrap();
+		let (_server, _session) = accept.await.unwrap();
+	}
 
 	/// End-to-end failover: the preferred candidate blackholes (TEST-NET-1 never
 	/// answers, or is unroutable outright in a sandbox), so the race must fall

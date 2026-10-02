@@ -70,6 +70,8 @@ struct ListenTls {
 #[derive(usage::Config)]
 #[usage(prefix = "listen.tcp")]
 struct ListenTcp {
+	#[usage(env = "MOQ_LISTEN_TCP_TLS", cli("--listen-tcp-tls"))]
+	tls: Option<bool>,
 	#[usage(env = "MOQ_LISTEN_TCP_BIND", cli("--listen-tcp-bind"))]
 	bind: Option<String>,
 }

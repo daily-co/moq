@@ -66,6 +66,8 @@ struct Runtime {
 #[derive(usage::Config)]
 #[usage(prefix = "cluster")]
 struct Cluster {
+	#[usage(env = "MOQ_CLUSTER_ROLE", cli("--cluster-role"))]
+	role: Option<String>,
 	#[usage(env = "MOQ_CLUSTER_ID", cli("--cluster-id"))]
 	id: Option<u64>,
 

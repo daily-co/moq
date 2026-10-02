@@ -262,7 +262,7 @@ impl Redirect {
 /// Unknown schemes rank lowest, so a forgotten classification is refused.
 fn scheme_tier(scheme: &str) -> u8 {
 	match scheme {
-		"https" | "moqt" | "moql" | "wss" | "iroh" => 2,
+		"https" | "moqt" | "moql" | "wss" | "iroh" | "tls" => 2,
 		"tcp" | "ws" | "http" => 1,
 		// `unix` lands here deliberately: local IPC is not an upgrade over a
 		// network transport, it is a different reachability class (see `is_local`).

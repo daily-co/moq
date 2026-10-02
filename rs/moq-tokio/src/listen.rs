@@ -100,7 +100,7 @@ pub struct Config {
 	#[usage(skip)]
 	pub(crate) listen: Option<String>,
 
-	/// Plaintext qmux TCP listener (`--listen-tcp-bind`, no TLS). Requires the
+	/// Qmux TCP listener (`--listen-tcp-bind`, optional `--listen-tcp-tls`). Requires the
 	/// `tcp` feature.
 	#[cfg(feature = "tcp")]
 	#[usage(flatten)]

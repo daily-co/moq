@@ -29,11 +29,34 @@ pub(crate) const CLUSTER_PATH: &str = "/.cluster";
 /// ticks turn into real conditional GETs.
 const CONNECT_API_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The relay's place in the cluster topology.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, usage::ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum Role {
+	/// Serve end users and dial this region's cores.
+	Edge,
+	/// Serve cluster peers and dial other regions' cores.
+	Core,
+}
+
+impl std::str::FromStr for Role {
+	type Err = anyhow::Error;
+
+	fn from_str(value: &str) -> Result<Self, Self::Err> {
+		match value {
+			"edge" => Ok(Self::Edge),
+			"core" => Ok(Self::Core),
+			_ => anyhow::bail!("cluster role must be edge or core"),
+		}
+	}
+}
+
 /// One cluster peer to dial, as listed in [`Config::connect`] or returned
 /// by a `connect_api` endpoint.
 ///
 /// Accepts a URL string or an object with `url` plus
-/// policy: `cost` prices the link, `egress` declares this relay's own price to
+/// policy: `role` declares the peer's place in the topology, `cost` prices the link, `egress` declares this relay's own price to
 /// the peer, and `token` carries the peer's credential. `egress` defaults to
 /// `cost`; a different effective value is rejected until asymmetric routing
 /// lands. An object `token` behaves exactly like an inline `?jwt=` and is
@@ -46,6 +69,7 @@ pub struct Peer {
 	cost: Option<u64>,
 	egress: Option<u64>,
 	token: Option<String>,
+	role: Option<Role>,
 }
 
 impl std::fmt::Debug for Peer {
@@ -56,6 +80,7 @@ impl std::fmt::Debug for Peer {
 			.field("url", &self.url)
 			.field("cost", &self.cost)
 			.field("egress", &self.egress)
+			.field("role", &self.role)
 			.field("token", &self.token.as_ref().map(|_| "..."))
 			.finish()
 	}
@@ -69,6 +94,7 @@ impl Peer {
 			cost: None,
 			egress: None,
 			token: None,
+			role: None,
 		}
 	}
 
@@ -92,6 +118,17 @@ impl Peer {
 	/// The peer's credential, replacing an inline `?jwt=`.
 	pub fn token(&self) -> Option<&str> {
 		self.token.as_deref()
+	}
+
+	/// Declare the peer's configured cluster role; an absent role is a legacy peer.
+	pub fn with_role(mut self, role: Role) -> Self {
+		self.role = Some(role);
+		self
+	}
+
+	/// The peer's configured cluster role, or None for a legacy peer.
+	pub fn role(&self) -> Option<Role> {
+		self.role
 	}
 
 	/// Price the link this peer is dialed on.
@@ -134,6 +171,8 @@ struct PeerObject {
 	egress: Option<u64>,
 	#[serde(default)]
 	token: Option<String>,
+	#[serde(default)]
+	role: Option<Role>,
 }
 
 /// A bare string is the URL form; a map is the object form. Dispatching on the
@@ -150,7 +189,7 @@ impl<'de> serde::Deserialize<'de> for Peer {
 			type Value = Peer;
 
 			fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-				f.write_str("a peer URL string or an object with url, cost, egress, token")
+				f.write_str("a peer URL string or an object with url, role, cost, egress, token")
 			}
 
 			fn visit_str<E: serde::de::Error>(self, url: &str) -> Result<Peer, E> {
@@ -165,6 +204,7 @@ impl<'de> serde::Deserialize<'de> for Peer {
 					cost: object.cost,
 					egress: object.egress,
 					token: object.token,
+					role: object.role,
 				})
 			}
 		}
@@ -178,7 +218,7 @@ impl serde::Serialize for Peer {
 	where
 		S: serde::Serializer,
 	{
-		if self.cost.is_none() && self.egress.is_none() && self.token.is_none() {
+		if self.cost.is_none() && self.egress.is_none() && self.token.is_none() && self.role.is_none() {
 			return serializer.serialize_str(&self.url);
 		}
 		use serde::ser::SerializeStruct as _;
@@ -192,6 +232,9 @@ impl serde::Serialize for Peer {
 		if self.token.is_some() {
 			len += 1;
 		}
+		if self.role.is_some() {
+			len += 1;
+		}
 		let mut state = serializer.serialize_struct("Peer", len)?;
 		state.serialize_field("url", &self.url)?;
 		if let Some(cost) = &self.cost {
@@ -202,6 +245,9 @@ impl serde::Serialize for Peer {
 		}
 		if let Some(token) = &self.token {
 			state.serialize_field("token", token)?;
+		}
+		if let Some(role) = self.role {
+			state.serialize_field("role", &role)?;
 		}
 		state.end()
 	}
@@ -238,6 +284,12 @@ impl DialTarget {
 	/// defaults to `cost`; anything else is rejected, never ignored.
 	fn from_peer(peer: &Peer) -> anyhow::Result<Self> {
 		let mut url = peer_url(&peer.url)?;
+		if url.scheme() == "tls" {
+			anyhow::ensure!(
+				url.host().is_some() && url.port().is_some(),
+				"a tls:// cluster peer needs a host and explicit port"
+			);
+		}
 		let has_cost = url.query_pairs().any(|(key, _)| key == "cost");
 		let has_jwt = url.query_pairs().any(|(key, value)| key == "jwt" && !value.is_empty());
 		if peer.cost.is_some() || peer.egress.is_some() {
@@ -522,6 +574,23 @@ impl DialMap {
 	}
 }
 
+fn validate_links(role: Option<Role>, peers: &[Peer]) -> anyhow::Result<()> {
+	for peer in peers {
+		match role {
+			Some(Role::Edge) => {
+				anyhow::ensure!(peer.role == Some(Role::Core), "an edge must dial explicit cores only");
+				anyhow::ensure!(
+					peer_url(&peer.url)?.scheme() == "tls",
+					"an edge must dial cores over tls:// qmux"
+				);
+			}
+			Some(Role::Core) => anyhow::ensure!(peer.role != Some(Role::Edge), "a core must never dial an edge"),
+			None => {}
+		}
+	}
+	Ok(())
+}
+
 /// Configuration for relay clustering.
 ///
 /// [`Self::connect`] / [`Self::connect_api`] list peers to dial, and
@@ -537,6 +606,10 @@ impl DialMap {
 #[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Config {
+	/// Run as an edge or core; unset preserves the legacy mesh.
+	#[usage(long = "cluster-role", env = "MOQ_CLUSTER_ROLE", setting = "cluster.role")]
+	pub role: Option<Role>,
+
 	/// Fixed origin (hop) id for this relay, identifying it in the hop chains
 	/// carried on each broadcast for loop detection and shortest-path routing.
 	///
@@ -956,6 +1029,18 @@ pub struct Cluster {
 }
 
 impl Cluster {
+	pub(crate) fn authorize_peer(&self, peer: bool) -> anyhow::Result<()> {
+		anyhow::ensure!(
+			self.config.role != Some(Role::Core) || peer,
+			"core relays serve cluster peers only"
+		);
+		anyhow::ensure!(
+			self.config.role != Some(Role::Edge) || !peer,
+			"edges do not accept inbound cluster links"
+		);
+		Ok(())
+	}
+
 	/// The origin ID used by this relay on the wire.
 	pub fn id(&self) -> u64 {
 		self.origin.hop().id()
@@ -990,6 +1075,7 @@ impl Cluster {
 		// Reject a repeated static identity with conflicting policy up front,
 		// matching the `--cluster-connect-api` validation, instead of silently
 		// keeping the first entry when dials spawn.
+		validate_links(config.role, &config.connect)?;
 		parse_peer_list(config.connect.clone(), None).context("invalid --cluster-connect peer list")?;
 		let mut origin_config = origin::Config::new(id);
 		if let Some(cache) = cache {
@@ -1213,6 +1299,10 @@ impl Cluster {
 		let lan = self.lan();
 		#[cfg(feature = "cluster-lan")]
 		self.config.lan.validate()?;
+		anyhow::ensure!(
+			!lan || self.config.role.is_none(),
+			"cluster LAN discovery requires legacy mesh mode; role-aware peer lists must be configured explicitly"
+		);
 		#[cfg(feature = "cluster-lan")]
 		if lan {
 			let advertise = self.advertise.as_ref();
@@ -1538,13 +1628,14 @@ impl Cluster {
 		// Dedupe against the shared dial map (and filter out self) on stable identity,
 		// while retaining the full dial configuration so a cost or credential update
 		// replaces the existing session.
-		let desired = match parse_peer_list(list, node.as_deref()) {
-			Ok(desired) => desired,
-			Err(err) => {
-				tracing::warn!(%err, "invalid cluster.connect_api peer list; keeping current peers");
-				return;
-			}
-		};
+		let desired =
+			match validate_links(self.config.role, &list).and_then(|()| parse_peer_list(list, node.as_deref())) {
+				Ok(desired) => desired,
+				Err(err) => {
+					tracing::warn!(%err, "invalid cluster.connect_api peer list; keeping current peers");
+					return;
+				}
+			};
 
 		dialed.reconcile_api(&desired, |target| {
 			tracing::info!(peer = %target.key, "cluster.connect_api peer; dialing");
@@ -1653,8 +1744,12 @@ impl Cluster {
 		// The peer's routes entered the cluster elsewhere. A peer that predates the
 		// hidden opt-in still discovers our hidden routes; see `connection::authorize`.
 		let origin = self.origin.clone().peer();
+		let mut publish = origin.consume().with_hidden(true);
+		if self.config.role == Some(Role::Edge) {
+			publish = publish.local();
+		}
 		let mut client = client
-			.with_publisher(origin.consume().with_hidden(true))
+			.with_publisher(publish)
 			.with_subscriber(origin)
 			.with_stats(self.stats.tier(self.cluster_tier()).session(""));
 		if let Some(cost) = cost {
@@ -2054,7 +2149,123 @@ mod tests {
 		assert_eq!(cluster.cluster_tier(), Tier::new("region/sjc"));
 	}
 
-	/// Stand-in dial task: never makes progress, exposes an AbortHandle.
+	#[test]
+	fn role_links_refuse_incompatible_topologies() {
+		let core = Peer::new("tls://core.example:4443").with_role(Role::Core);
+		let edge = Peer::new("tls://edge.example:4443").with_role(Role::Edge);
+		let legacy = Peer::new("https://legacy.example");
+		assert!(validate_links(Some(Role::Edge), std::slice::from_ref(&core)).is_ok());
+		assert!(validate_links(Some(Role::Edge), std::slice::from_ref(&edge)).is_err());
+		assert!(validate_links(Some(Role::Edge), std::slice::from_ref(&legacy)).is_err());
+		assert!(
+			validate_links(
+				Some(Role::Edge),
+				&[Peer::new("https://core.example").with_role(Role::Core)]
+			)
+			.is_err()
+		);
+		assert!(validate_links(Some(Role::Core), std::slice::from_ref(&edge)).is_err());
+		assert!(validate_links(Some(Role::Core), &[core, legacy]).is_ok());
+		assert!(validate_links(None, &[edge]).is_ok());
+	}
+
+	#[test]
+	fn peer_role_survives_serialization() {
+		let peer = Peer::new("tls://core.example:4443").with_role(Role::Core);
+		let json = serde_json::to_string(&peer).unwrap();
+		assert_eq!(serde_json::from_str::<Peer>(&json).unwrap(), peer);
+		assert_eq!(
+			serde_json::from_str::<Peer>(r#""https://legacy.example""#)
+				.unwrap()
+				.role(),
+			None
+		);
+		assert!(serde_json::from_str::<Peer>(r#"{"url":"tls://core.example:4443","role":"corre"}"#).is_err());
+	}
+
+	#[tokio::test]
+	async fn role_admission_requires_a_peer_grant_on_cores() {
+		let mut config = Config {
+			role: Some(Role::Core),
+			..Default::default()
+		};
+		let core = new_cluster(config.clone()).unwrap();
+		let patterns: moq_auth::Patterns = [moq_auth::Pattern::all()].into_iter().collect();
+		let mut grant = moq_auth::Grant::new(patterns.clone(), patterns);
+		let token = auth::Token::new("/", &grant);
+		assert!(
+			crate::connection::authorize(&core, &token, None, true, &"tls").is_err(),
+			"a certificate alone must not grant cluster membership"
+		);
+		grant.peer = true;
+		let token = auth::Token::new("/", &grant);
+		assert!(crate::connection::authorize(&core, &token, None, false, &"tls").is_ok());
+		config.role = Some(Role::Edge);
+		let edge = new_cluster(config).unwrap();
+		assert!(crate::connection::authorize(&edge, &token, None, true, &"tls").is_err());
+	}
+
+	#[tokio::test]
+	async fn core_loss_moves_only_its_paths() {
+		tokio::time::pause();
+		let config = Config {
+			role: Some(Role::Edge),
+			..Default::default()
+		};
+		let first = new_cluster(config.clone()).unwrap();
+		let second = new_cluster(config).unwrap();
+		let populate = |edge: &Cluster, core: u64| {
+			(0..64)
+				.map(|path| {
+					let mut route = origin::Route::default();
+					route.hops = vec![Hop::new(7).unwrap(), Hop::new(core).unwrap()].try_into().unwrap();
+					edge.origin
+						.clone()
+						.peer()
+						.publish(format!("room/{path}"), route)
+						.unwrap()
+				})
+				.collect::<Vec<_>>()
+		};
+		let lost_first = populate(&first, 10);
+		let _survivor_first = populate(&first, 11);
+		let lost_second = populate(&second, 10);
+		let _survivor_second = populate(&second, 11);
+		let mut first = first.origin.consume().announced();
+		let mut second = second.origin.consume().announced();
+		let snapshot = |cursor: &mut moq_net::announce::Consumer| {
+			std::iter::from_fn(|| cursor.try_next())
+				.map(|update| {
+					(
+						update.prefix.to_string(),
+						update.route.hops.as_slice().last().unwrap().id(),
+					)
+				})
+				.collect::<HashMap<_, _>>()
+		};
+		let before = snapshot(&mut first);
+		assert_eq!(
+			before,
+			snapshot(&mut second),
+			"both edges must agree on the selected core"
+		);
+		let moved = before.values().filter(|&&core| core == 10).count();
+		assert!(
+			moved > 0 && moved < 64,
+			"the pool must distribute paths across both cores"
+		);
+		drop(lost_first);
+		drop(lost_second);
+		for cursor in [&mut first, &mut second] {
+			for _ in 0..moved {
+				let update = cursor.next().await.unwrap();
+				assert_eq!(before.get(update.prefix.as_str()), Some(&10));
+				assert_eq!(update.route.hops.as_slice().last().unwrap().id(), 11);
+			}
+			assert!(cursor.try_next().is_none(), "paths on the surviving core must not move");
+		}
+	}
+
 	fn placeholder_handle() -> AbortHandle {
 		tokio::spawn(std::future::pending::<()>()).abort_handle()
 	}
