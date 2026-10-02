@@ -5,10 +5,10 @@ import { createMockTransportPair } from "../mock.ts";
 import { Stream, Writer } from "../stream.ts";
 import { Connection } from "./connection.ts";
 import { Group } from "./object.ts";
-import { RequestError } from "./request.ts";
-import { SUBSCRIBE_TRACKS_ID } from "./subscribe_namespace.ts";
 import { SetupOption, SetupOptions } from "./parameters.ts";
+import { RequestError } from "./request.ts";
 import { Setup } from "./setup.ts";
+import { SUBSCRIBE_TRACKS_ID } from "./subscribe_namespace.ts";
 import { ALPN, type IetfVersion, Version } from "./version.ts";
 
 const PADDING = 0x132b3e28n;
