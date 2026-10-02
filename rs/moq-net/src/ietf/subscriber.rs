@@ -3158,20 +3158,22 @@ where
 					Poll::Pending => {}
 				}
 			}
+			let mut abandoned = false;
 			slot.poll(waiter, |state| match &**state {
-				GroupFetch::Done => Poll::Ready(None),
+				GroupFetch::Done => Poll::Ready(()),
 				_ => {
 					if joined.poll_unused(waiter).is_ready()
 						&& demand.poll_unused(waiter).is_ready()
 						&& demand.abort_unused(Error::Cancel)
 					{
-						Poll::Ready(Some(Error::Cancel))
+						abandoned = true;
+						Poll::Ready(())
 					} else {
 						Poll::Pending
 					}
 				}
 			})
-			.map(|res| res.ok().flatten())
+			.map(|_| abandoned.then_some(Error::Cancel))
 		})
 		.await;
 		if let Some(err) = reset {
