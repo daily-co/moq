@@ -20,8 +20,9 @@ Use different names for these different roles rather than rename both.
   publisher-facing options unchanged. Classify each occurrence by its role;
   do not perform an indiscriminate search-and-replace.
 - Rename subscriber/export staleness CLI flags from `--max-age` to
-  `--max-delay`. `moq play --delay` and the T-STD export's unified `--delay`
-  keep their settled shapes. Publisher/import retention remains `--max-age`.
+  `--max-delay`, except T-STD export, whose own quest unifies presentation
+  and staleness under `--delay`. Keep `moq play --delay` unchanged.
+  Publisher/import retention remains `--max-age`.
 - Keep the wire field identifiers, encoding, and interpretation unchanged.
   Describe subscriber staleness consistently in the matching draft and docs;
   a terminology edit must not accidentally rename the publisher's field.
