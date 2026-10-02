@@ -11,7 +11,9 @@ remote. The payload is MPEG-TS, so the same codecs as [`import ts`](/bin/cli)
 apply: H.264/H.265 video and AAC, MP2, AC-3, or E-AC-3 audio. Ingest logs the
 same per-stream lines as `import ts`, under an `srt{path=...}` span: an
 elementary stream that stopped delivering access units, and audio frame sync
-lost.
+lost, plus damaged units refused on each PID. Damage drops that unit and keeps
+the session alive; video resumes at its next keyframe. The cumulative `damaged`
+count is the same one reported by `import ts`.
 
 ```bash
 # Accept a contribution feed and publish it

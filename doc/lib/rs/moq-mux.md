@@ -25,6 +25,14 @@ the inverse and skip stalled groups past a max age. Per-codec
 producers (`import::Opus`, H.264, and so on) are available for feeding frames
 you already have.
 
+MPEG-TS `Import::stats` returns cumulative per-PID `StreamStats`: delivered
+`units`, transport-clock `quiet` time, audio `resyncs`, scanned bytes `discarded`,
+frames `unconfirmed`, and damaged units refused in `damaged`. A malformed media
+packet, PES header, or codec unit is dropped whole; only that PID loses sync,
+and video waits for its next keyframe. Publishing and catalog failures remain
+fatal. `ts::stats::Log` reports these counters for both the CLI and SRT gateway.
+The exporter's `damaged` count remains zero.
+
 fMP4 export emits one fragment per publisher group by default, including audio.
 A closed group flushes even if the live publisher pauses before its next frame.
 `fmp4::Export::with_fragment_duration` adds an explicit duration cap. A zero cap
