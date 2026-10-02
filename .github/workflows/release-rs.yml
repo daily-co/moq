@@ -12,7 +12,7 @@ concurrency:
 on:
   push:
     branches:
-      - main
+      - release
     # A run costs the better part of an hour and they serialize on the
     # concurrency group above, so a push that can't change a crate's version
     # or its API shouldn't queue one.

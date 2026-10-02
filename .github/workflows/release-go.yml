@@ -26,7 +26,7 @@ name: Release Go
 on:
   push:
     branches:
-      - main
+      - release
   workflow_run:
     workflows: ["Release Go FFI"]
     types:

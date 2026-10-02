@@ -15,8 +15,7 @@ name: Release Swift Lib
 on:
   push:
     branches:
-      - main
-      - dev
+      - release
     paths:
       - "swift/VERSION"
       - "swift/Package.swift.template"

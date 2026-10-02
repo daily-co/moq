@@ -15,7 +15,7 @@ name: Release Py
 on:
   push:
     branches:
-      - main
+      - release
     paths:
       - "py/moq-rs/**"
       - ".github/workflows/release-py.yml"
