@@ -17,12 +17,24 @@ Facts (`origin/main`, 2026-10-01): the helpers (`live_import` in
 Decided (2026-10-01): `crate::Clock`'s monotonic epoch becomes a
 `web_async::time::Instant`. That is tokio's clock on native, so the tests start
 paused and call `tokio::time::advance`, and it takes `std::time::Instant` off the
-wasm path, as #4687 did for the TS SI debounce. The wall mapping stays
-`SystemTime`. Rejected: injecting a `now` into the importers through
+wasm path. #4687 used the same `Instant` type, but only for the private SI
+debounce after dropping its `crate::Clock`; `Clock` itself still reads
+`std::time::Instant`. The wall mapping stays `SystemTime`. Rejected: injecting a `now` into the importers through
 `translate_at`, which is plumbing only tests want.
 
-Update `test_util::late_clock` to match, and check other `crate::Clock` users
-(including `Clock::at` callers) still build on wasm.
+`std::time::Instant` is public at the boundary: `Clock::at(epoch, wall)` is
+re-exported from `moq-mux`, and the json and binary timed writes
+(`json.rs` `update`/`append`, and their `binary.rs` twins) take
+`Timed<_, Instant>` through the crate-private `Clock::stamp`/`capture`.
+`moq_net::Timed`'s docs say moq-mux uses `std::time::Instant`. Callers pass
+`std::time::Instant` from `test_util::late_clock`, moq-cli publish, moq-hls
+export, moq-audio and moq-video capture, and the catalog producer tests.
 
-Public API: check whether `Clock::at` is exported; if its `Instant` type
-changes, report it. Wire: none.
+Open (maintainer, ask before starting): keep the public inputs on
+`std::time::Instant` and convert at the boundary (native only; additive, stays
+on `main`), or switch them to `web_async::time::Instant` as a typed break on
+`dev` and update every caller and doc. Recommended: convert at the boundary,
+so only the private epoch moves.
+
+Public API: none if converted at the boundary; otherwise `Clock::at` and the
+timed writes change type. Wire: none.
