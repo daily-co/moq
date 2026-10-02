@@ -623,7 +623,7 @@ async fn live_import(chunks: &[&[u8]], live: bool, ago: std::time::Duration, idl
 	let mut after = before;
 	for (i, chunk) in chunks.iter().enumerate() {
 		if i > 0 {
-			std::thread::sleep(idle);
+			tokio::time::advance(idle).await;
 		}
 		import.decode(chunk).unwrap();
 		if i == 0 {
@@ -663,7 +663,7 @@ async fn live_import_anchors_a_late_first_frame() {
 
 /// The same feed played twice, as when an encoder restarts its PTS, continues forward after the
 /// real idle gap instead of rewinding.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn live_import_restarts_forward_after_idle() {
 	let data: &[u8] = include_bytes!("test_data/bbb_cbr.ts");
 	let once = live_import(&[data], false, std::time::Duration::ZERO, std::time::Duration::ZERO).await;

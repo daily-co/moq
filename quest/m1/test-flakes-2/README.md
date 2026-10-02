@@ -35,7 +35,6 @@ Public API: none. Wire: none.
 - [Media late join](/quest/m1/test-flakes-2/media-late-join.md) - `just test media` late join stays within one GOP, or the regression is fixed
 - [js/publish audio clock](/quest/m1/test-flakes-2/publish-audio-clock.md) - the audio encoder delay test runs on mock time
 - [WebSocket paused TLS dial](/quest/m1/test-flakes-2/websocket-paused-tls.md) - the fixed-address WebSocket tests stop pausing the clock over a real dial
-- [moq-mux live import clock](/quest/m1/test-flakes-2/mux-live-import-clock.md) - the live import restart tests advance a paused clock instead of sleeping
 - [Tracing capture audit](/quest/m1/test-flakes-2/trace-capture-audit.md) - no test misses tracing events because a parallel test silenced the call site
 
 ## Related
