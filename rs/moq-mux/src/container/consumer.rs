@@ -235,8 +235,10 @@ impl<F: Container> Consumer<F> {
 					Poll::Ready(Ok(Some(Event::Frame(frame)))) => {
 						let seq = group.group.sequence;
 						let ts = frame.timestamp;
-						if self.floor.is_some_and(|floor| ts.as_micros() < floor.as_micros()) {
-							return Poll::Ready(Err(TimestampRewind.into()));
+						if let Some(edge) = self.floor
+							&& ts.as_micros() < edge.as_micros()
+						{
+							return Poll::Ready(Err(TimestampRewind { timestamp: ts, edge }.into()));
 						}
 						if self.start.is_none_or(|(start, _)| start != seq) {
 							self.start = Some((seq, ts));
@@ -493,7 +495,7 @@ impl<F: Container> Consumer<F> {
 			if let Poll::Ready(Ok(min)) = group.poll_min_timestamp(waiter, &self.format)
 				&& min.as_micros() < edge.as_micros()
 			{
-				return Err(TimestampRewind.into());
+				return Err(TimestampRewind { timestamp: min, edge }.into());
 			}
 		}
 
@@ -1126,7 +1128,15 @@ mod tests {
 		write_group(&mut track, 1, &[ts(0)]);
 		track.finish().unwrap();
 		let err = consumer.read().await.unwrap_err();
-		assert!(matches!(err, crate::Error::TimestampRewind(_)));
+		assert!(matches!(
+			err,
+			crate::Error::TimestampRewind(TimestampRewind { timestamp, edge })
+				if timestamp == ts(0) && edge == ts(100_000)
+		));
+		assert_eq!(
+			err.to_string(),
+			"frame timestamp 0 µs is below the previous group's start 100000 µs"
+		);
 	}
 
 	#[tokio::test]
@@ -1267,7 +1277,15 @@ mod tests {
 		track.finish().unwrap();
 		assert_eq!(consumer.read().await.unwrap().unwrap().timestamp, ts(200_000));
 		let err = consumer.read().await.unwrap_err();
-		assert!(matches!(err, crate::Error::TimestampRewind(_)));
+		assert!(matches!(
+			err,
+			crate::Error::TimestampRewind(TimestampRewind { timestamp, edge })
+				if timestamp == ts(50_000) && edge == ts(100_000)
+		));
+		assert_eq!(
+			err.to_string(),
+			"frame timestamp 50000 µs is below the previous group's start 100000 µs"
+		);
 	}
 
 	// ---- Empty payloads ----

@@ -123,8 +123,17 @@ pub struct InvalidEnd;
 
 /// A group starts before the previous group did: the source restarted, which is a new broadcast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("frame timestamp is below the previous group's start")]
-pub struct TimestampRewind;
+#[error(
+	"frame timestamp {} µs is below the previous group's start {} µs",
+	.timestamp.as_micros(),
+	.edge.as_micros()
+)]
+pub struct TimestampRewind {
+	/// The refused frame's timestamp.
+	pub timestamp: moq_net::Timestamp,
+	/// The previous group's start that the frame must not precede.
+	pub edge: moq_net::Timestamp,
+}
 
 /// Encode and decode media frames over a moq-lite group.
 ///
