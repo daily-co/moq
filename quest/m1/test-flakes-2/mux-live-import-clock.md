@@ -30,11 +30,9 @@ re-exported from `moq-mux`, and the json and binary timed writes
 `std::time::Instant` from `test_util::late_clock`, moq-cli publish, moq-hls
 export, moq-audio and moq-video capture, and the catalog producer tests.
 
-Open (maintainer, ask before starting): keep the public inputs on
-`std::time::Instant` and convert at the boundary (native only; additive, stays
-on `main`), or switch them to `web_async::time::Instant` as a typed break on
-`dev` and update every caller and doc. Recommended: convert at the boundary,
-so only the private epoch moves.
+Decided (maintainer, 2026-10-01): convert at the boundary. Public inputs stay
+`std::time::Instant` and convert to the private epoch internally (native only),
+so this is additive and stays on `main`. Rejected: switching the public types to
+`web_async::time::Instant` as a break on `dev`.
 
-Public API: none if converted at the boundary; otherwise `Clock::at` and the
-timed writes change type. Wire: none.
+Public API: none. Wire: none.
