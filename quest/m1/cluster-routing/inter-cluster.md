@@ -2,8 +2,9 @@
 
 ## Goal
 
-Announcements crossing a cluster boundary stay path vector with cluster ids
-as the hops, like BGP between autonomous systems. A customer's on-prem
+Announcements crossing a cluster boundary stay path vector with configured
+cluster domains (`cluster.domain` / peer `cluster`) as the hops, like BGP
+between autonomous systems. A customer's on-prem
 cluster is one hop, and an announcement naming the receiving cluster is
 dropped. Inside a cluster, hop lists name relays; across a boundary they name
 clusters.
@@ -21,8 +22,8 @@ clusters.
   separate role from relay Hop IDs. Every member of a cluster shares the
   configured domain; never mint one randomly per restart.
 - Existing peers without a boundary identity remain intra-cluster. Refuse a
-  boundary configuration without a local identity, a peer in the same domain,
-  or a malformed identity before listening or dialing. Keep the existing
+  boundary configuration before listening or dialing if its local domain is
+  missing, its peer domain equals its local domain, or either identity is malformed. Keep the existing
   peer authentication requirement; a URL or an observed socket address alone
   does not authorize a boundary peer.
 - Validate the remote domain against the configured expected identity when
@@ -35,10 +36,12 @@ clusters.
   boundary handshake, with no change to published versions. Refuse boundary
   operation when that version is not negotiated. This is validation of the
   configured identities, not automatic topology discovery.
-- What crosses a boundary is a cluster's announcement, plus its cluster-id
-  list. An imported record keeps that list as provenance, so
-  whichever boundary relay exports it appends its own cluster id to the full
-  list; stripping it on import would let A → B → C → A re-enter A.
+- What crosses a boundary is a cluster's announcement, plus its cluster-domain
+  list. An imported record keeps that list as provenance, so whichever boundary
+  relay exports it appends its configured `cluster.domain` to the full list.
+  Boundary path-vector hops use these domains; intra-cluster hop lists keep
+  using relay Hop IDs (`cluster.id`). Stripping provenance on import would
+  let A → B → C → A re-enter A.
 - The remote origin is outside the receiving cluster, so the
   importing boundary relay announces the record inside its cluster as the
   origin, with the boundary link's cost added. The serving origin's identity
@@ -51,8 +54,9 @@ clusters.
 
 Wire: the boundary announcement in the current wip lite version, with the
 draft updated in the same PR. Tests: two clusters with two boundary links
-and an origin that is not a boundary relay, and three clusters in a cycle with different ingress and egress relays, where
-  an announcement neither loops nor re-enters its origin cluster.
+and an origin that is not a boundary relay, and three clusters in a cycle
+with different ingress and egress relays, where an announcement neither loops
+nor re-enters its origin cluster.
 
 Also test malformed and missing configuration, mismatched peer identities,
 unauthenticated boundary requests, version refusal, and an ordinary
