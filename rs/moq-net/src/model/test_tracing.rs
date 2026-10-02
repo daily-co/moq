@@ -27,6 +27,10 @@ thread_local! {
 pub(crate) fn count_drop_warnings(expected_message: &str, f: impl FnOnce()) -> usize {
 	static INSTALL: Once = Once::new();
 	INSTALL.call_once(|| tracing::subscriber::set_global_default(Warns).expect("no other global subscriber"));
+	// A callsite first reached on another thread while the install above was still publishing
+	// sees no subscriber and is cached as disabled. Every capture starts after the install has
+	// completed, so rebuilding here re-enables it against the now-global subscriber.
+	tracing::callsite::rebuild_interest_cache();
 
 	let capture = Capture {
 		expected: expected_message.to_owned(),
