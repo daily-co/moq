@@ -22,8 +22,9 @@ fn certificate(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf
 }
 
 /// QUIC and HTTP on ephemeral ports, `/metrics` on the internal listener, and no
-/// admission configured: each test sets its own. WebSocket is off unless `ws`, so a
-/// QUIC dial's WebSocket fallback cannot reach admission and count a second time.
+/// admission configured: each test sets its own. WebSocket is served only when `ws`,
+/// on the HTTP port. A QUIC dial's WebSocket fallback goes to the QUIC port, where
+/// nothing listens over TCP, so it cannot reach admission and count a second time.
 fn config(dir: &std::path::Path, ws: bool) -> Config {
 	let (cert, key) = certificate(dir);
 	let mut config = Config::default();
@@ -39,6 +40,7 @@ fn config(dir: &std::path::Path, ws: bool) -> Config {
 
 struct Running {
 	quic: SocketAddr,
+	#[cfg_attr(not(feature = "websocket"), allow(dead_code))]
 	http: SocketAddr,
 	metrics: String,
 	trigger: moq_relay::shutdown::Trigger,
@@ -95,7 +97,6 @@ fn client() -> moq_tokio::Client {
 	let mut config = moq_tokio::connect::Config::default();
 	config.tls.insecure = Some(true);
 	config.once = Some(true);
-	config.websocket.delay = Duration::ZERO;
 	config.bind = Some("127.0.0.1:0".parse().expect("parse bind"));
 	config.init(Default::default()).expect("client init")
 }
@@ -120,23 +121,30 @@ async fn assert_refused(url: url::Url, publisher: bool) {
 	}
 }
 
-/// A path the public rules do not reach is `refused`, over QUIC and WebSocket alike.
+/// A path the public rules do not reach is `refused`.
 #[tokio::test]
 async fn refused_sessions_are_counted() {
 	let dir = tempfile::tempdir().expect("tempdir");
-	let mut quic_config = config(dir.path(), false);
-	quic_config.auth.public = vec!["anon/**".parse().unwrap()];
-	let relay = start(quic_config).await;
+	let mut config = config(dir.path(), false);
+	config.auth.public = vec!["anon/**".parse().unwrap()];
+	let relay = start(config).await;
 
 	assert_eq!(relay.refused("refused").await, 0);
 	assert_refused(format!("https://{}/rooms", relay.quic).parse().unwrap(), false).await;
 	assert_eq!(relay.refused("refused").await, 1);
 	assert_eq!(relay.refused("forbidden").await, 0);
 	relay.stop().await;
+}
 
-	let mut ws_config = config(dir.path(), true);
-	ws_config.auth.public = vec!["anon/**".parse().unwrap()];
-	let relay = start(ws_config).await;
+/// The WebSocket path counts a refusal the same way.
+#[cfg(feature = "websocket")]
+#[tokio::test]
+async fn websocket_refused_sessions_are_counted() {
+	let dir = tempfile::tempdir().expect("tempdir");
+	let mut config = config(dir.path(), true);
+	config.auth.public = vec!["anon/**".parse().unwrap()];
+	let relay = start(config).await;
+
 	assert_refused(format!("ws://{}/rooms", relay.http).parse().unwrap(), false).await;
 	assert_eq!(relay.refused("refused").await, 1);
 	relay.stop().await;
