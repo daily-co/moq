@@ -580,31 +580,37 @@ async fn uring_refusals_reach_metrics() {
 
 	// `/rooms` is outside the public rules. A client may finish connecting before
 	// the verdict lands, so a session that closes promptly counts as refused.
-	for url in [
-		format!("https://127.0.0.1:{port}/rooms"),
-		format!("moql://127.0.0.1:{port}/rooms"),
+	// Scraped after each dial, so a miscount names the transport that made it.
+	for (want, url) in [
+		(1, format!("https://127.0.0.1:{port}/rooms")),
+		(2, format!("moql://127.0.0.1:{port}/rooms")),
 	] {
 		let url: url::Url = url.parse().expect("parse url");
-		let connected = tokio::time::timeout(TIMEOUT, client().with_reconnect(false).connect(url).established())
-			.await
-			.expect("connect timeout");
+		let connected = tokio::time::timeout(
+			TIMEOUT,
+			client().with_reconnect(false).connect(url.clone()).established(),
+		)
+		.await
+		.expect("connect timeout");
 		if let Ok(connection) = connected {
 			let _ = tokio::time::timeout(TIMEOUT, connection.closed())
 				.await
 				.expect("the workers kept a session they should refuse");
 		}
-	}
 
-	let body = reqwest::get(format!("http://{internal}/metrics"))
-		.await
-		.expect("scrape")
-		.text()
-		.await
-		.expect("metrics body");
-	assert!(
-		body.contains("moq_relay_sessions_refused_total{reason=\"refused\"} 2\n"),
-		"{body}"
-	);
+		let body = reqwest::get(format!("http://{internal}/metrics"))
+			.await
+			.expect("scrape")
+			.text()
+			.await
+			.expect("metrics body");
+		assert!(
+			body.contains(&format!(
+				"moq_relay_sessions_refused_total{{reason=\"refused\"}} {want}\n"
+			)),
+			"after {url}:\n{body}"
+		);
+	}
 
 	running.abort();
 	let _ = running.await;
